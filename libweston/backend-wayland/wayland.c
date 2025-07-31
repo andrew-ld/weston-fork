@@ -1219,9 +1219,6 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 		}
 
 		if (syncobj_drm_supported) {
-			output->syncobj_surface = wp_linux_drm_syncobj_manager_v1_get_surface(
-				b->parent.syncobj_manager, output->parent.surface);
-	
 			output->drm_fd = open(gr->drm_device, O_RDWR | O_CLOEXEC);
 			assert(output->drm_fd >= 0);
 
@@ -1244,6 +1241,9 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 
 			output->acquire_point = 0;
 			output->release_point = 0;
+
+			output->syncobj_surface = wp_linux_drm_syncobj_manager_v1_get_surface(
+				b->parent.syncobj_manager, output->parent.surface);
 		}
     }
 
@@ -1285,6 +1285,14 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 		if (decoration) {
 			zxdg_toplevel_decoration_v1_set_mode(decoration,ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 		}
+	}
+
+	if (output->syncobj_surface) {
+		wp_linux_drm_syncobj_surface_v1_set_acquire_point(output->syncobj_surface,
+			output->acquire_timeline, 0, 0);
+
+		wp_linux_drm_syncobj_surface_v1_set_release_point(output->syncobj_surface,
+				output->release_timeline, 0, 0);
 	}
 
 	return 0;
