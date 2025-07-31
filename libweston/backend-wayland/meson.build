@@ -8,6 +8,7 @@ srcs_wlwl = [
 	'wayland.c',
 	presentation_time_protocol_c,
 	presentation_time_server_protocol_h,
+	presentation_time_client_protocol_h,
 	xdg_shell_client_protocol_h,
 	xdg_shell_protocol_c,
 	viewporter_protocol_c,
@@ -18,7 +19,9 @@ srcs_wlwl = [
 	tearing_control_v1_client_protocol_h,
 	tearing_control_v1_protocol_c,
 	xdg_decoration_unstable_v1_client_protocol_h,
-	xdg_decoration_unstable_v1_protocol_c
+	xdg_decoration_unstable_v1_protocol_c,
+	linux_drm_syncobj_v1_protocol_c,
+	linux_drm_syncobj_v1_client_protocol_h,
 ]
 
 deps_wlwl = [
@@ -29,6 +32,7 @@ deps_wlwl = [
 	dep_libdrm_headers,
 	dep_lib_cairo_shared,
 	dep_lib_renderer_borders,
+	dep_libdrm
 ]
 
 if get_option('renderer-gl')
