@@ -28,6 +28,8 @@
 #include "viewporter-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
+#include "tearing-control-v1-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -91,6 +93,8 @@ struct wayland_backend {
 		struct wp_viewporter *viewporter;
 		struct zwp_pointer_constraints_v1 *pointer_constraints;
 		struct zwp_relative_pointer_manager_v1 *relative_pointer_manager;
+		struct wp_tearing_control_manager_v1 *tearing_control_manager;
+		struct zxdg_decoration_manager_v1 *decoration_manager;
 
 		struct wl_list output_list;
 
@@ -142,6 +146,7 @@ struct wayland_output {
 		struct wl_list free_buffers;
 	} shm;
 
+	struct wp_tearing_control_v1 *tearing_control;
 
 	struct weston_mode mode;
 	struct weston_mode native_mode;
@@ -1125,6 +1130,22 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 
 		xdg_toplevel_set_title(output->parent.xdg_toplevel, output->title);
 
+        if (b->parent.tearing_control_manager) {
+            output->tearing_control = wp_tearing_control_manager_v1_get_tearing_control(
+				b->parent.tearing_control_manager, output->parent.surface);
+        }
+
+        if (b->parent.decoration_manager) {
+            struct zxdg_toplevel_decoration_v1 *decoration;
+
+            decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(
+                b->parent.decoration_manager, output->parent.xdg_toplevel);
+
+			if (decoration) {
+				zxdg_toplevel_decoration_v1_set_mode(decoration,ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+			}
+        }
+
 		wl_surface_commit(output->parent.surface);
 
 		output->parent.wait_for_configure = true;
@@ -1161,6 +1182,11 @@ wayland_output_enable(struct weston_output *base)
 
 	if (ret < 0)
 		return -1;
+
+	if (output->tearing_control) {
+		wp_tearing_control_v1_set_presentation_hint(
+			output->tearing_control,WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC);
+	}
 
 	switch (renderer->type) {
 	case WESTON_RENDERER_PIXMAN:
@@ -2393,6 +2419,10 @@ registry_handle_global(void *data, struct wl_registry *registry, uint32_t name,
 		b->parent.relative_pointer_manager =
 			wl_registry_bind(registry, name,
 					 &zwp_relative_pointer_manager_v1_interface, 1);
+	} else if (strcmp(interface, "wp_tearing_control_manager_v1") == 0) {
+		b->parent.tearing_control_manager = wl_registry_bind(registry, name,&wp_tearing_control_manager_v1_interface, 1);
+	} else if (strcmp(interface, "zxdg_decoration_manager_v1") == 0) {
+		b->parent.decoration_manager = wl_registry_bind(registry, name,&zxdg_decoration_manager_v1_interface, 1);
 	}
 }
 

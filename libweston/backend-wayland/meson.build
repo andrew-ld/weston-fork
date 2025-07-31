@@ -15,6 +15,10 @@ srcs_wlwl = [
 	relative_pointer_unstable_v1_protocol_c,
 	pointer_constraints_unstable_v1_client_protocol_h,
 	pointer_constraints_unstable_v1_protocol_c,
+	tearing_control_v1_client_protocol_h,
+	tearing_control_v1_protocol_c,
+	xdg_decoration_unstable_v1_client_protocol_h,
+	xdg_decoration_unstable_v1_protocol_c
 ]
 
 deps_wlwl = [

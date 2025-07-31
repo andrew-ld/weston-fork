@@ -29,6 +29,7 @@ generated_protocols = [
 	[ 'pointer-constraints', 'unstable', 'v1' ],
 	[ 'relative-pointer', 'unstable', 'v1' ],
 	[ 'single-pixel-buffer', 'staging', 'v1' ],
+	[ 'xdg-decoration', 'unstable', 'v1' ],
 	[ 'tablet', 'unstable', 'v2' ],
 	[ 'tearing-control', 'staging', 'v1' ],
 	[ 'text-cursor-position', 'internal' ],
