@@ -1292,7 +1292,7 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 			output->acquire_timeline, 0, 0);
 
 		wp_linux_drm_syncobj_surface_v1_set_release_point(output->syncobj_surface,
-				output->release_timeline, 0, 0);
+			output->release_timeline, 0, 0);
 	}
 
 	return 0;
