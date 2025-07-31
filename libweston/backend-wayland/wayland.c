@@ -62,7 +62,6 @@
 #include <libweston/libweston.h>
 #include <libweston/backend-wayland.h>
 #include "renderer-gl/gl-renderer.h"
-#include "renderer-vulkan/vulkan-renderer.h"
 #include "shared/weston-drm-fourcc.h"
 #include "pixman-renderer.h"
 #include "shared/helpers.h"
@@ -314,134 +313,6 @@ wayland_shm_buffer_destroy(struct wayland_shm_buffer *buffer)
 }
 
 static void
-buffer_release(void *data, struct wl_buffer *buffer)
-{
-	struct wayland_shm_buffer *sb = data;
-
-	if (sb->output) {
-		wl_list_insert(&sb->output->shm.free_buffers, &sb->free_link);
-	} else {
-		wayland_shm_buffer_destroy(sb);
-	}
-}
-
-static bool
-wayland_rb_discarded_cb(weston_renderbuffer_t renderbuffer, void *data)
-{
-	struct wayland_shm_buffer *sb = data;
-	const struct weston_renderer *renderer;
-
-	if (sb->renderbuffer) {
-		renderer = sb->output->backend->compositor->renderer;
-		renderer->destroy_renderbuffer(sb->renderbuffer);
-		sb->renderbuffer = NULL;
-	}
-	sb->output = NULL;
-
-	return true;
-}
-
-static const struct wl_buffer_listener buffer_listener = {
-	buffer_release
-};
-
-static struct wayland_shm_buffer *
-wayland_output_get_shm_buffer(struct wayland_output *output)
-{
-	const struct weston_renderer *renderer;
-	struct wayland_backend *b = output->backend;
-	const struct pixel_format_info *pfmt = b->formats[0];
-	uint32_t shm_format = pixel_format_get_shm_format(pfmt);
-	struct wl_shm *shm = b->parent.shm;
-	struct wayland_shm_buffer *sb;
-
-	struct wl_shm_pool *pool;
-	int width, height, stride;
-	struct weston_geometry area;
-	int fd;
-	unsigned char *data;
-
-	if (!wl_list_empty(&output->shm.free_buffers)) {
-		sb = container_of(output->shm.free_buffers.next,
-				  struct wayland_shm_buffer, free_link);
-		wl_list_remove(&sb->free_link);
-		wl_list_init(&sb->free_link);
-
-		return sb;
-	}
-
-	width = output->base.current_mode->width;
-	height = output->base.current_mode->height;
-
-	stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
-
-	fd = os_create_anonymous_file(height * stride);
-	if (fd < 0) {
-		weston_log("could not create an anonymous file buffer: %s\n",
-			   strerror(errno));
-		return NULL;
-	}
-
-	data = mmap(NULL, height * stride, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (data == MAP_FAILED) {
-		weston_log("could not mmap %d memory for data: %s\n", height * stride,
-			   strerror(errno));
-		close(fd);
-		return NULL;
-	}
-
-	sb = zalloc(sizeof *sb);
-	if (sb == NULL) {
-		weston_log("could not zalloc %zu memory for sb: %s\n", sizeof *sb,
-			   strerror(errno));
-		close(fd);
-		munmap(data, height * stride);
-		return NULL;
-	}
-
-	sb->output = output;
-	wl_list_init(&sb->free_link);
-	wl_list_insert(&output->shm.buffers, &sb->link);
-
-	sb->data = data;
-	sb->width = width;
-	sb->height = height;
-	sb->size = height * stride;
-
-	pool = wl_shm_create_pool(shm, fd, sb->size);
-
-	sb->buffer = wl_shm_pool_create_buffer(pool, 0,
-					       width, height,
-					       stride,
-					       shm_format);
-	wl_buffer_add_listener(sb->buffer, &buffer_listener, sb);
-	wl_shm_pool_destroy(pool);
-	close(fd);
-
-	memset(data, 0, sb->size);
-
-	sb->c_surface =
-		cairo_image_surface_create_for_data(data, CAIRO_FORMAT_ARGB32,
-						    width, height, stride);
-
-	area.x = 0;
-	area.y = 0;
-
-	renderer = b->compositor->renderer;
-
-	/* Address only the interior, excluding output decorations */
-	if (renderer->type == WESTON_RENDERER_PIXMAN)
-		sb->renderbuffer =
-			renderer->create_renderbuffer(&output->base, pfmt,
-						      (uint32_t *)(data + area.y * stride) + area.x,
-						      stride,
-						      wayland_rb_discarded_cb,
-						      sb);
-
-	return sb;
-}
-
-static void
 frame_done(void *data, struct wl_callback *callback, uint32_t time)
 {
 	struct wayland_output *output = data;
@@ -541,89 +412,6 @@ wayland_output_repaint_gl(struct weston_output *output_base)
 }
 #endif
 
-#ifdef ENABLE_VULKAN
-static int
-wayland_output_repaint_vulkan(struct weston_output *output_base)
-{
-	struct wayland_output *output = to_wayland_output(output_base);
-	struct weston_compositor *ec;
-	pixman_region32_t damage;
-
-	assert(output);
-
-	ec = output->base.compositor;
-
-	pixman_region32_init(&damage);
-
-	weston_output_flush_damage_for_primary_plane(output_base, &damage);
-
-	output->frame_cb = wl_surface_frame(output->parent.surface);
-	wl_callback_add_listener(output->frame_cb, &frame_listener, output);
-
-	ec->renderer->repaint_output(&output->base, &damage, NULL);
-
-	pixman_region32_fini(&damage);
-
-	return 0;
-}
-#endif
-
-static void
-wayland_shm_buffer_attach(struct wayland_shm_buffer *sb,
-			  pixman_region32_t *repaint_damage)
-{
-	pixman_region32_t damage;
-	pixman_box32_t *rects;
-	int i, n;
-
-	pixman_region32_init(&damage);
-	weston_region_global_to_output(&damage, &sb->output->base,
-				       repaint_damage);
-
-	rects = pixman_region32_rectangles(&damage, &n);
-	wl_surface_attach(sb->output->parent.surface, sb->buffer, 0, 0);
-	for (i = 0; i < n; ++i)
-		wl_surface_damage(sb->output->parent.surface, rects[i].x1,
-				  rects[i].y1, rects[i].x2 - rects[i].x1,
-				  rects[i].y2 - rects[i].y1);
-
-	pixman_region32_fini(&damage);
-}
-
-static int
-wayland_output_repaint_pixman(struct weston_output *output_base)
-{
-	struct wayland_output *output = to_wayland_output(output_base);
-	struct wayland_backend *b;
-	struct wayland_shm_buffer *sb;
-	pixman_region32_t damage;
-
-	assert(output);
-
-	b = output->backend;
-
-	pixman_region32_init(&damage);
-
-	weston_output_flush_damage_for_primary_plane(output_base, &damage);
-
-	sb = wayland_output_get_shm_buffer(output);
-
-	b->compositor->renderer->repaint_output(output_base, &damage,
-						sb->renderbuffer);
-
-	wayland_shm_buffer_attach(sb, &damage);
-
-	pixman_region32_fini(&damage);
-
-	output->frame_cb = wl_surface_frame(output->parent.surface);
-	wl_callback_add_listener(output->frame_cb, &frame_listener, output);
-	wl_surface_commit(output->parent.surface);
-	wl_display_flush(b->parent.wl_display);
-
-
-	return 0;
-}
-
 static void
 wayland_backend_destroy_output_surface(struct wayland_output *output)
 {
@@ -672,18 +460,10 @@ wayland_output_disable(struct weston_output *base)
 	wayland_output_destroy_shm_buffers(output);
 
 	switch (renderer->type) {
-	case WESTON_RENDERER_PIXMAN:
-		renderer->pixman->output_destroy(&output->base);
-		break;
 #ifdef ENABLE_EGL
 	case WESTON_RENDERER_GL:
 		renderer->gl->output_destroy(&output->base);
 		wl_egl_window_destroy(output->gl.egl_window);
-		break;
-#endif
-#ifdef ENABLE_VULKAN
-	case WESTON_RENDERER_VULKAN:
-		renderer->vulkan->output_destroy(&output->base);
 		break;
 #endif
 	default:
@@ -769,55 +549,6 @@ cleanup_window:
 }
 #endif
 
-#ifdef ENABLE_VULKAN
-static int
-wayland_output_init_vulkan_renderer(struct wayland_output *output)
-{
-	const struct weston_mode *mode = output->base.current_mode;
-	struct wayland_backend *b = output->backend;
-	const struct weston_renderer *renderer;
-	struct vulkan_renderer_output_options options = {
-		.formats = b->formats,
-		.formats_count = b->formats_count,
-	};
-
-	options.area.x = 0;
-	options.area.y = 0;
-	options.area.width = mode->width;
-	options.area.height = mode->height;
-	options.fb_size.width = mode->width;
-	options.fb_size.height = mode->height;
-
-	options.wayland_display = b->parent.wl_display;
-	options.wayland_surface = output->parent.surface;
-
-	renderer = output->base.compositor->renderer;
-
-	if (renderer->vulkan->output_window_create(&output->base, &options) < 0)
-		goto cleanup_window;
-
-	return 0;
-
-cleanup_window:
-	return -1;
-}
-#endif
-
-static int
-wayland_output_init_pixman_renderer(struct wayland_output *output)
-{
-	struct weston_renderer *renderer = output->base.compositor->renderer;
-	const struct pixman_renderer_output_options options = {
-		.use_shadow = true,
-		.fb_size = {
-			.width = output->base.current_mode->width,
-			.height = output->base.current_mode->height
-		},
-		.format = output->backend->formats[0]
-	};
-	return renderer->pixman->output_create(&output->base, &options);
-}
-
 static void
 wayland_output_resize_surface(struct wayland_output *output)
 {
@@ -864,17 +595,7 @@ wayland_output_resize_surface(struct wayland_output *output)
 
 	} else
 #endif
-#ifdef ENABLE_VULKAN
-	if (b->compositor->renderer->type == WESTON_RENDERER_VULKAN) {
-		weston_renderer_resize_output(&output->base, &fb_size, &area);
-
-	} else
-#endif
 	{
-		/*
-		 * Pixman-renderer never knows about decorations, we blit them
-		 * ourselves.
-		 */
 		struct weston_size pm_size = {
 			.width = area.width,
 			.height = area.height
@@ -1016,23 +737,11 @@ wayland_output_switch_mode_finish(struct wayland_output *output)
 	struct weston_renderer *renderer = output->base.compositor->renderer;
 
 	switch (renderer->type) {
-	case WESTON_RENDERER_PIXMAN:
-		renderer->pixman->output_destroy(&output->base);
-		if (wayland_output_init_pixman_renderer(output) < 0)
-			return -1;
-		break;
 #ifdef ENABLE_EGL
 	case WESTON_RENDERER_GL:
 		renderer->gl->output_destroy(&output->base);
 		wl_egl_window_destroy(output->gl.egl_window);
 		if (wayland_output_init_gl_renderer(output) < 0)
-			return -1;
-		break;
-#endif
-#ifdef ENABLE_VULKAN
-	case WESTON_RENDERER_VULKAN:
-		renderer->vulkan->output_destroy(&output->base);
-		if (wayland_output_init_vulkan_renderer(output) < 0)
 			return -1;
 		break;
 #endif
@@ -1224,13 +933,13 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 
 			create_syncobj_timeline(output->drm_fd,
 				&output->acquire_timeline_handle,&output->acquire_timeline_fd);
-			assert(output->acquire_timeline_handle >= 0);
-			assert(output->acquire_timeline_fd >= 0);
+			assert(output->acquire_timeline_handle != 0);
+			assert(output->acquire_timeline_fd != 0);
 
 			create_syncobj_timeline(output->drm_fd,
 					&output->release_timeline_handle,&output->release_timeline_fd);
-			assert(output->release_timeline_handle >= 0);
-			assert(output->release_timeline_fd >= 0);
+			assert(output->release_timeline_handle != 0);
+			assert(output->release_timeline_fd != 0);
 
 			output->acquire_timeline =
 				wp_linux_drm_syncobj_manager_v1_import_timeline(
@@ -1328,26 +1037,12 @@ wayland_output_enable(struct weston_output *base)
 	}
 
 	switch (renderer->type) {
-	case WESTON_RENDERER_PIXMAN:
-		if (wayland_output_init_pixman_renderer(output) < 0)
-			goto err_output;
-
-		output->base.repaint = wayland_output_repaint_pixman;
-		break;
 #ifdef ENABLE_EGL
 	case WESTON_RENDERER_GL:
 		if (wayland_output_init_gl_renderer(output) < 0)
 			goto err_output;
 
 		output->base.repaint = wayland_output_repaint_gl;
-		break;
-#endif
-#ifdef ENABLE_VULKAN
-	case WESTON_RENDERER_VULKAN:
-		if (wayland_output_init_vulkan_renderer(output) < 0)
-			goto err_output;
-
-		output->base.repaint = wayland_output_repaint_vulkan;
 		break;
 #endif
 	default:
@@ -2770,36 +2465,9 @@ wayland_backend_create(struct weston_compositor *compositor,
 				weston_log_continue("\n");
 				goto err_display;
 			}
-			renderer = WESTON_RENDERER_PIXMAN;
-		}
-		if (renderer != WESTON_RENDERER_PIXMAN)
+		} else {
 			break;
-		weston_log_continue("; falling back to Pixman.\n");
-		FALLTHROUGH;
-	}
-	case WESTON_RENDERER_PIXMAN:
-		if (weston_compositor_init_renderer(compositor,
-						    WESTON_RENDERER_PIXMAN,
-						    NULL) < 0) {
-			weston_log("Failed to initialize pixman renderer\n");
-			goto err_display;
 		}
-		break;
-	case WESTON_RENDERER_VULKAN: {
-		const struct vulkan_renderer_display_options options = {
-			.formats = b->formats,
-			.formats_count = b->formats_count,
-		};
-
-		if (weston_compositor_init_renderer(compositor,
-						    WESTON_RENDERER_VULKAN,
-						    &options.base) < 0) {
-			weston_log("Failed to initialize the Vulkan renderer\n");
-			goto err_display;
-		}
-		/* For now Vulkan does not fall back to anything automatically,
-		 * like GL renderer does. */
-		break;
 	}
 	default:
 		weston_log("Unsupported renderer requested\n");
