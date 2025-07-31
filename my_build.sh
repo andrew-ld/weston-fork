@@ -33,6 +33,7 @@ meson build/ \
     -Dsystemd=false \
     -Dtest-junit-xml=false \
     --prefix=$(pwd)/install \
-    -Ddesktop-shell-client-default=kiosk
+    -Ddesktop-shell-client-default=kiosk \
+    -Dsimple-clients=[]
 
 ninja -C build/ install
