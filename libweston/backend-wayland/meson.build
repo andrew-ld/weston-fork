@@ -10,6 +10,7 @@ srcs_wlwl = [
 	presentation_time_server_protocol_h,
 	xdg_shell_client_protocol_h,
 	xdg_shell_protocol_c,
+	viewporter_protocol_c
 ]
 
 deps_wlwl = [

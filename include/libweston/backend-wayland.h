@@ -41,7 +41,6 @@ struct weston_wayland_backend_config {
 	enum weston_renderer_type renderer;
 	bool sprawl;
 	char *display_name;
-	bool fullscreen;
 	char *cursor_theme;
 	int cursor_size;
 };
