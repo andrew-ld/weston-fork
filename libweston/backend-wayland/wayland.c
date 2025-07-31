@@ -26,6 +26,8 @@
 
 #include "config.h"
 #include "viewporter-client-protocol.h"
+#include "pointer-constraints-unstable-v1-client-protocol.h"
+#include "relative-pointer-unstable-v1-client-protocol.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -54,17 +56,13 @@
 #include "renderer-gl/gl-renderer.h"
 #include "renderer-vulkan/vulkan-renderer.h"
 #include "shared/weston-drm-fourcc.h"
-#include "shared/weston-egl-ext.h"
 #include "pixman-renderer.h"
 #include "shared/helpers.h"
-#include "shared/image-loader.h"
 #include "shared/os-compatibility.h"
 #include "shared/cairo-util.h"
 #include "shared/timespec-util.h"
-#include "shared/xalloc.h"
 #include "xdg-shell-client-protocol.h"
 #include "presentation-time-server-protocol.h"
-#include "linux-dmabuf.h"
 #include <libweston/pixel-formats.h>
 #include <libweston/windowed-output-api.h>
 
@@ -91,6 +89,8 @@ struct wayland_backend {
 		struct xdg_wm_base *xdg_wm_base;
 		struct wl_shm *shm;
 		struct wp_viewporter *viewporter;
+		struct zwp_pointer_constraints_v1 *pointer_constraints;
+		struct zwp_relative_pointer_manager_v1 *relative_pointer_manager;
 
 		struct wl_list output_list;
 
@@ -205,6 +205,8 @@ struct wayland_input {
 		struct wl_pointer *pointer;
 		struct wl_keyboard *keyboard;
 		struct wl_touch *touch;
+		struct zwp_locked_pointer_v1 *locked_pointer;
+		struct zwp_relative_pointer_v1 *relative_pointer;
 
 		struct {
 			struct wl_surface *surface;
@@ -812,6 +814,113 @@ wayland_output_resize_surface(struct wayland_output *output)
 	wayland_output_destroy_shm_buffers(output);
 }
 
+
+static void
+handle_relative_motion(void *data,
+		       struct zwp_relative_pointer_v1 *relative_pointer,
+		       uint32_t utime_hi, uint32_t utime_lo, wl_fixed_t dx,
+		       wl_fixed_t dy, wl_fixed_t dx_unaccel, wl_fixed_t dy_unaccel)
+{
+	struct wayland_input *input = data;
+	struct timespec ts;
+	struct weston_pointer_motion_event motion_event = { 0 };
+
+	timespec_from_usec(&ts, ((uint64_t)utime_hi << 32) | utime_lo);
+
+	motion_event.mask = WESTON_POINTER_MOTION_REL;
+	motion_event.rel.x = wl_fixed_to_double(dx);
+	motion_event.rel.y = wl_fixed_to_double(dy);
+
+	notify_motion(&input->base, &ts, &motion_event);
+
+	if (input->seat_version < WL_POINTER_FRAME_SINCE_VERSION)
+		notify_pointer_frame(&input->base);
+}
+
+static const struct zwp_relative_pointer_v1_listener relative_pointer_listener = {
+	.relative_motion = handle_relative_motion,
+};
+
+static void
+locked_pointer_locked(void *data, struct zwp_locked_pointer_v1 *locked_pointer) {
+}
+
+static void
+locked_pointer_unlocked(void *data, struct zwp_locked_pointer_v1 *locked_pointer);
+
+static void
+destroy_pointer_lock(struct wayland_input *input, bool is_manual_unlock)
+{
+	if (input->parent.locked_pointer) {
+		// If this is a manual unlock (e.g., leaving fullscreen),
+		// we should not try to re-lock. Otherwise, if the server
+		// unlocked us, we might want to re-establish the lock.
+		// By setting user_data to NULL, we prevent the unlocked
+		// handler from re-locking.
+		if (is_manual_unlock) {
+			zwp_locked_pointer_v1_set_user_data(input->parent.locked_pointer, NULL);
+		}
+
+		zwp_locked_pointer_v1_destroy(input->parent.locked_pointer);
+		input->parent.locked_pointer = NULL;
+	}
+	if (input->parent.relative_pointer) {
+		zwp_relative_pointer_v1_destroy(input->parent.relative_pointer);
+		input->parent.relative_pointer = NULL;
+	}
+}
+
+static const struct zwp_locked_pointer_v1_listener locked_pointer_listener = {
+	.locked = locked_pointer_locked,
+	.unlocked = locked_pointer_unlocked,
+};
+
+
+static void
+create_pointer_lock(struct wayland_input *input, struct wayland_output *output)
+{
+	struct wayland_backend *b = input->backend;
+
+	if (!b->parent.pointer_constraints || !b->parent.relative_pointer_manager ||
+	    !input->parent.pointer || input->parent.locked_pointer) {
+		return;
+	}
+
+	input->parent.relative_pointer =
+		zwp_relative_pointer_manager_v1_get_relative_pointer(
+			b->parent.relative_pointer_manager, input->parent.pointer);
+	zwp_relative_pointer_v1_add_listener(input->parent.relative_pointer,
+					     &relative_pointer_listener, input);
+
+	input->parent.locked_pointer =
+		zwp_pointer_constraints_v1_lock_pointer(
+			b->parent.pointer_constraints,
+			output->parent.surface,
+			input->parent.pointer,
+			NULL,
+			ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+
+	zwp_locked_pointer_v1_add_listener(input->parent.locked_pointer,
+					   &locked_pointer_listener, input);
+}
+
+static void
+locked_pointer_unlocked(void *data, struct zwp_locked_pointer_v1 *locked_pointer)
+{
+	struct wayland_input *input = data;
+
+	if (!input) {
+		return;
+	}
+
+	destroy_pointer_lock(input, false);
+
+	if (input->output) {
+		weston_log("Pointer was unlocked by host, attempting to re-lock to focused output.\n");
+		create_pointer_lock(input, input->output);
+	}
+}
+
 static void
 wayland_output_set_fullscreen(struct wayland_output *output,
 			      uint32_t framerate, struct wl_output *target)
@@ -822,6 +931,11 @@ wayland_output_set_fullscreen(struct wayland_output *output,
 		xdg_toplevel_set_fullscreen(output->parent.xdg_toplevel, target);
 	} else {
 		abort();
+	}
+
+	struct wayland_input *input;
+	wl_list_for_each(input, &output->backend->input_list, link) {
+		create_pointer_lock(input, output);
 	}
 }
 
@@ -2271,6 +2385,14 @@ registry_handle_global(void *data, struct wl_registry *registry, uint32_t name,
 	} else if (strcmp(interface, "wp_viewporter") == 0) {
 		b->parent.viewporter =
 			wl_registry_bind(registry, name, &wp_viewporter_interface, 1);
+	} else if (strcmp(interface, "zwp_pointer_constraints_v1") == 0) {
+		b->parent.pointer_constraints =
+			wl_registry_bind(registry, name,
+					 &zwp_pointer_constraints_v1_interface, 1);
+	} else if (strcmp(interface, "zwp_relative_pointer_manager_v1") == 0) {
+		b->parent.relative_pointer_manager =
+			wl_registry_bind(registry, name,
+					 &zwp_relative_pointer_manager_v1_interface, 1);
 	}
 }
 

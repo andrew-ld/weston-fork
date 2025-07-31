@@ -32,6 +32,7 @@ meson build/ \
     -Ddefault_both_libraries=static \
     -Dsystemd=false \
     -Dtest-junit-xml=false \
-    --prefix=$(pwd)/install
+    --prefix=$(pwd)/install \
+    -Ddesktop-shell-client-default=kiosk
 
 ninja -C build/ install

@@ -10,7 +10,11 @@ srcs_wlwl = [
 	presentation_time_server_protocol_h,
 	xdg_shell_client_protocol_h,
 	xdg_shell_protocol_c,
-	viewporter_protocol_c
+	viewporter_protocol_c,
+	relative_pointer_unstable_v1_client_protocol_h,
+	relative_pointer_unstable_v1_protocol_c,
+	pointer_constraints_unstable_v1_client_protocol_h,
+	pointer_constraints_unstable_v1_protocol_c,
 ]
 
 deps_wlwl = [
