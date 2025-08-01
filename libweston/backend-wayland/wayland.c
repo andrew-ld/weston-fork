@@ -363,6 +363,7 @@ feedback_handle_presented(void *data,
 	struct wayland_output *output = data;
 	struct wayland_backend *b = output->backend;
 	struct timespec ts;
+	uint32_t presented_flags = 0;
 
 	if (b->parent.presentation_clock_id_valid &&
 	    b->parent.presentation_clock_id == b->compositor->presentation_clock) {
@@ -372,7 +373,11 @@ feedback_handle_presented(void *data,
 		weston_compositor_read_presentation_clock(b->compositor, &ts);
 	}
 
-	weston_output_finish_frame(&output->base, &ts, flags);
+	if (!(flags & WP_PRESENTATION_FEEDBACK_KIND_VSYNC)) {
+		presented_flags |= WESTON_FINISH_FRAME_TEARING;
+	}
+
+	weston_output_finish_frame(&output->base, &ts, presented_flags);
 }
 
 static void
@@ -1352,6 +1357,7 @@ wayland_head_create(struct wayland_backend *backend, const char *name)
 	head->base.backend = &backend->base;
 
 	weston_head_set_connection_status(&head->base, true);
+	weston_head_set_supported_vrr_modes_mask(&head->base, WESTON_VRR_MODE_GAME);
 	weston_compositor_add_head(compositor, &head->base);
 
 	return head;
