@@ -532,43 +532,6 @@ static const struct zwp_linux_dmabuf_feedback_v1_listener dmabuf_feedback_listen
 	.tranche_flags = dmabuf_feedback_handle_tranche_flags,
 };
 
-
-static struct wl_buffer *
-wayland_backend_create_dmabuf_buffer(struct weston_backend *backend,
-				     int32_t width, int32_t height,
-				     uint32_t format, uint32_t flags,
-				     int num_planes, int32_t fds[],
-				     uint32_t strides[], uint32_t offsets[],
-				     uint64_t modifier)
-{
-	struct wayland_backend *b = to_wayland_backend(backend);
-	struct zwp_linux_buffer_params_v1 *params;
-	struct wl_buffer *buffer;
-	int i;
-
-	if (!b->parent.linux_dmabuf) {
-		weston_log("Error: Host compositor does not support zwp_linux_dmabuf_v1.\n");
-		return NULL;
-	}
-
-	params = zwp_linux_dmabuf_v1_create_params(b->parent.linux_dmabuf);
-	if (!params) {
-		weston_log("Error: Failed to create linux_dmabuf_params.\n");
-		return NULL;
-	}
-
-	for (i = 0; i < num_planes; i++) {
-		zwp_linux_buffer_params_v1_add(
-			params, fds[i], i, offsets[i], strides[i], modifier >> 32, modifier & 0xffffffff);
-	}
-
-	buffer = zwp_linux_buffer_params_v1_create_immed(params, width, height, format, 0);
-
-	zwp_linux_buffer_params_v1_destroy(params);
-
-	return buffer;
-}
-
 #ifdef ENABLE_EGL
 static int
 wayland_output_repaint_gl(struct weston_output *output_base)
