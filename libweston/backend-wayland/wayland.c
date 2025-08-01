@@ -1210,7 +1210,7 @@ wayland_output_enable(struct weston_output *base)
 
 	if (output->tearing_control) {
 		wp_tearing_control_v1_set_presentation_hint(
-			output->tearing_control,WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC);
+			output->tearing_control,WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC);
 	}
 
 	switch (renderer->type) {
