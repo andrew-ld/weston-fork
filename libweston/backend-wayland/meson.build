@@ -22,8 +22,6 @@ srcs_wlwl = [
 	xdg_decoration_unstable_v1_protocol_c,
 	linux_drm_syncobj_v1_protocol_c,
 	linux_drm_syncobj_v1_client_protocol_h,
-	linux_dmabuf_unstable_v1_protocol_c,
-	linux_dmabuf_unstable_v1_client_protocol_h,
 ]
 
 deps_wlwl = [
