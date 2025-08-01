@@ -368,11 +368,6 @@ feedback_handle_presented(void *data,
 	    b->parent.presentation_clock_id == b->compositor->presentation_clock) {
 		ts.tv_sec = ((uint64_t)tv_sec_hi << 32) + tv_sec_lo;
 		ts.tv_nsec = tv_nsec;
-
-		if (timespec_sub_to_nsec(&ts, &output->base.frame_time) < 0) {
-			weston_output_finish_frame(&output->base, NULL, WP_PRESENTATION_FEEDBACK_INVALID);
-			return;
-		}
 	} else {
 		weston_compositor_read_presentation_clock(b->compositor, &ts);
 	}
@@ -1089,10 +1084,6 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 
 	wl_surface_set_user_data(output->parent.surface, output);
 	wl_surface_set_buffer_scale(output->parent.surface, 1);
-
-	if (b->parent.presentation) {
-		wp_presentation_add_listener(b->parent.presentation,&presentation_listener, b);
-	}
 
 	if (b->parent.linux_dmabuf) {
 		b->parent.linux_dmabuf_feedback = zalloc(sizeof(*b->parent.linux_dmabuf_feedback));
@@ -2446,6 +2437,7 @@ registry_handle_global(void *data, struct wl_registry *registry, uint32_t name,
 	} else if (strcmp(interface, "wp_presentation") == 0) {
 		b->parent.presentation = wl_registry_bind(registry, name,
 						   &wp_presentation_interface, 1);
+		wp_presentation_add_listener(b->parent.presentation,&presentation_listener, b);
 	} else if (strcmp(interface, "wp_linux_drm_syncobj_manager_v1") == 0) {
 		b->parent.syncobj_manager = wl_registry_bind(registry, name,
 					 &wp_linux_drm_syncobj_manager_v1_interface, 1);
