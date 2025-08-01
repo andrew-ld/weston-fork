@@ -25,6 +25,7 @@
  */
 
 #include "config.h"
+#include "linux-dmabuf-unstable-v1-server-protocol.h"
 #include "renderer-gl/gl-renderer-internal.h"
 #include "viewporter-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
@@ -33,6 +34,7 @@
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "linux-drm-syncobj-v1-client-protocol.h"
+#include "linux-dmabuf-unstable-v1-client-protocol.h"
 
 #include <EGL/egl.h>
 #include <assert.h>
@@ -101,7 +103,10 @@ struct wayland_backend {
 		struct wp_tearing_control_manager_v1 *tearing_control_manager;
 		struct zxdg_decoration_manager_v1 *decoration_manager;
 		struct wp_presentation *presentation;
+		clockid_t presentation_clock_id;
+		bool presentation_clock_id_valid;
 		struct wp_linux_drm_syncobj_manager_v1 *syncobj_manager;
+		struct zwp_linux_dmabuf_v1 *linux_dmabuf;
 
 		struct wl_list output_list;
 
@@ -147,11 +152,6 @@ struct wayland_output {
 	struct {
 		struct wl_egl_window *egl_window;
 	} gl;
-
-	struct {
-		struct wl_list buffers;
-		struct wl_list free_buffers;
-	} shm;
 
 	struct wp_tearing_control_v1 *tearing_control;
 
@@ -206,21 +206,6 @@ struct wayland_parent_output {
 struct wayland_head {
 	struct weston_head base;
 	struct wayland_parent_output *parent_output;
-};
-
-struct wayland_shm_buffer {
-	struct wayland_output *output;
-	struct wl_list link;
-	struct wl_list free_link;
-
-	struct wl_buffer *buffer;
-	void *data;
-	size_t size;
-	int width;
-	int height;
-
-	weston_renderbuffer_t renderbuffer;
-	cairo_surface_t *c_surface;
 };
 
 struct wayland_input {
@@ -293,26 +278,6 @@ to_wayland_backend(struct weston_backend *base)
 }
 
 static void
-wayland_shm_buffer_destroy(struct wayland_shm_buffer *buffer)
-{
-	struct wayland_output *output = buffer->output;
-	const struct weston_renderer *renderer;
-
-	cairo_surface_destroy(buffer->c_surface);
-	if (output) {
-		renderer = output->base.compositor->renderer;
-		renderer->destroy_renderbuffer(buffer->renderbuffer);
-	}
-
-	wl_buffer_destroy(buffer->buffer);
-	munmap(buffer->data, buffer->size);
-
-	wl_list_remove(&buffer->link);
-	wl_list_remove(&buffer->free_link);
-	free(buffer);
-}
-
-static void
 frame_done(void *data, struct wl_callback *callback, uint32_t time)
 {
 	struct wayland_output *output = data;
@@ -321,8 +286,6 @@ frame_done(void *data, struct wl_callback *callback, uint32_t time)
 	assert(callback == output->frame_cb);
 	wl_callback_destroy(callback);
 	output->frame_cb = NULL;
-
-	/* XXX: use the presentation extension for proper timings */
 
 	/*
 	 * This is the fallback case, where Presentation extension is not
@@ -337,6 +300,77 @@ frame_done(void *data, struct wl_callback *callback, uint32_t time)
 
 static const struct wl_callback_listener frame_listener = {
 	frame_done
+};
+
+static void
+presentation_handle_clock_id(void *data,
+			     struct wp_presentation *wp_presentation,
+			     uint32_t clk_id)
+{
+	struct wayland_backend *b = data;
+
+	b->parent.presentation_clock_id = clk_id;
+	b->parent.presentation_clock_id_valid = true;
+	b->base.supported_presentation_clocks = 1 << clk_id;
+}
+
+static const struct wp_presentation_listener presentation_listener = {
+	.clock_id = presentation_handle_clock_id,
+};
+
+static void
+feedback_handle_sync_output(void *data,
+			    struct wp_presentation_feedback *feedback,
+			    struct wl_output *output)
+{
+	/* This space is intentionally left blank */
+}
+
+static void
+feedback_handle_presented(void *data,
+			  struct wp_presentation_feedback *feedback,
+			  uint32_t tv_sec_hi,
+			  uint32_t tv_sec_lo,
+			  uint32_t tv_nsec,
+			  uint32_t refresh,
+			  uint32_t seq_hi,
+			  uint32_t seq_lo,
+			  uint32_t flags)
+{
+	struct wayland_output *output = data;
+	struct wayland_backend *b = output->backend;
+	struct timespec ts;
+
+	if (b->parent.presentation_clock_id_valid &&
+	    b->parent.presentation_clock_id == b->compositor->presentation_clock) {
+		ts.tv_sec = ((uint64_t)tv_sec_hi << 32) + tv_sec_lo;
+		ts.tv_nsec = tv_nsec;
+
+		if (timespec_sub_to_nsec(&ts, &output->base.frame_time) < 0) {
+			weston_output_finish_frame(&output->base, NULL, WP_PRESENTATION_FEEDBACK_INVALID);
+			return;
+		}
+	} else {
+		weston_compositor_read_presentation_clock(b->compositor, &ts);
+	}
+
+	weston_output_finish_frame(&output->base, &ts, flags);
+}
+
+static void
+feedback_handle_discarded(void *data,
+			  struct wp_presentation_feedback *feedback)
+{
+	struct wayland_output *output = data;
+
+	weston_output_finish_frame(&output->base, NULL,
+				   WP_PRESENTATION_FEEDBACK_INVALID);
+}
+
+static const struct wp_presentation_feedback_listener presentation_feedback_listener = {
+	.sync_output = feedback_handle_sync_output,
+	.presented = feedback_handle_presented,
+	.discarded = feedback_handle_discarded,
 };
 
 static int
@@ -401,8 +435,18 @@ wayland_output_repaint_gl(struct weston_output *output_base)
 		ec->renderer->repaint_output(&output->base, &damage, NULL);
 	}
 
-	output->frame_cb = wl_surface_frame(output->parent.surface);
-	wl_callback_add_listener(output->frame_cb, &frame_listener, output);
+	if (b->parent.presentation) {
+		struct wp_presentation_feedback *feedback;
+		feedback = wp_presentation_feedback(b->parent.presentation,
+						    output->parent.surface);
+		wp_presentation_feedback_add_listener(feedback,
+						      &presentation_feedback_listener,
+						      output);
+	} else {
+		output->frame_cb = wl_surface_frame(output->parent.surface);
+		wl_callback_add_listener(output->frame_cb, &frame_listener, output);
+	}
+
 	wl_surface_commit(output->parent.surface);
 	wl_display_flush(b->parent.wl_display);
 
@@ -436,16 +480,6 @@ wayland_backend_destroy_output_surface(struct wayland_output *output)
 	output->parent.surface = NULL;
 }
 
-static void
-wayland_output_destroy_shm_buffers(struct wayland_output *output)
-{
-	struct wayland_shm_buffer *buffer, *next;
-
-	/* Throw away any remaining SHM buffers */
-	wl_list_for_each_safe(buffer, next, &output->shm.free_buffers, free_link)
-		wayland_shm_buffer_destroy(buffer);
-}
-
 static int
 wayland_output_disable(struct weston_output *base)
 {
@@ -456,8 +490,6 @@ wayland_output_disable(struct weston_output *base)
 
 	if (!output->base.enabled)
 		return 0;
-
-	wayland_output_destroy_shm_buffers(output);
 
 	switch (renderer->type) {
 #ifdef ENABLE_EGL
@@ -602,8 +634,6 @@ wayland_output_resize_surface(struct wayland_output *output)
 		};
 		weston_renderer_resize_output(&output->base, &pm_size, NULL);
 	}
-
-	wayland_output_destroy_shm_buffers(output);
 }
 
 
@@ -1015,9 +1045,6 @@ wayland_output_enable(struct weston_output *base)
 	int ret = 0;
 
 	assert(output);
-
-	wl_list_init(&output->shm.buffers);
-	wl_list_init(&output->shm.free_buffers);
 
 	weston_log("Creating %dx%d wayland output at (%d, %d)\n",
 		   output->base.current_mode->width,
@@ -2260,9 +2287,14 @@ registry_handle_global(void *data, struct wl_registry *registry, uint32_t name,
 	} else if (strcmp(interface, "wp_presentation") == 0) {
 		b->parent.presentation = wl_registry_bind(registry, name,
 						   &wp_presentation_interface, 1);
+		wp_presentation_add_listener(b->parent.presentation,
+					 &presentation_listener, b);
 	} else if (strcmp(interface, "wp_linux_drm_syncobj_manager_v1") == 0) {
 		b->parent.syncobj_manager = wl_registry_bind(registry, name,
 					 &wp_linux_drm_syncobj_manager_v1_interface, 1);
+	} else if (strcmp(interface, "zwp_linux_dmabuf_v1") == 0 && version >= 4) {
+			b->parent.linux_dmabuf = wl_registry_bind(registry, name,
+						&zwp_linux_dmabuf_v1_interface,4);
 	}
 }
 
@@ -2347,6 +2379,30 @@ wayland_destroy(struct weston_backend *backend)
 	wl_list_for_each_safe(input, next_input, &b->pending_input_list, link)
 		wayland_input_destroy(input);
 
+	if (b->parent.syncobj_manager)
+		wp_linux_drm_syncobj_manager_v1_destroy(b->parent.syncobj_manager);
+
+	if (b->parent.presentation)
+		wp_presentation_destroy(b->parent.presentation);
+
+	if (b->parent.decoration_manager)
+		zxdg_decoration_manager_v1_destroy(b->parent.decoration_manager);
+
+	if (b->parent.tearing_control_manager)
+		wp_tearing_control_manager_v1_destroy(b->parent.tearing_control_manager);
+
+	if (b->parent.relative_pointer_manager)
+		zwp_relative_pointer_manager_v1_destroy(b->parent.relative_pointer_manager);
+
+	if (b->parent.pointer_constraints)
+		zwp_pointer_constraints_v1_destroy(b->parent.pointer_constraints);
+
+	if (b->parent.viewporter)
+		wp_viewporter_destroy(b->parent.viewporter);
+
+	if (b->parent.linux_dmabuf)
+		zwp_linux_dmabuf_v1_destroy(b->parent.linux_dmabuf);
+
 	if (b->parent.shm)
 		wl_shm_destroy(b->parent.shm);
 
@@ -2414,6 +2470,7 @@ wayland_backend_create(struct weston_compositor *compositor,
 		return NULL;
 
 	b->compositor = compositor;
+	b->parent.presentation_clock_id_valid = false;
 	wl_list_insert(&compositor->backend_list, &b->base.link);
 
 	b->base.supported_presentation_clocks =
@@ -2460,14 +2517,11 @@ wayland_backend_create(struct weston_compositor *compositor,
 		if (weston_compositor_init_renderer(compositor,
 						    WESTON_RENDERER_GL,
 						    &options.base) < 0) {
-			weston_log("Failed to initialize the GL renderer");
-			if (renderer == WESTON_RENDERER_GL) {
-				weston_log_continue("\n");
-				goto err_display;
-			}
+			weston_log("Failed to initialize the GL renderer\n");
 		} else {
 			break;
 		}
+		FALLTHROUGH;
 	}
 	default:
 		weston_log("Unsupported renderer requested\n");
