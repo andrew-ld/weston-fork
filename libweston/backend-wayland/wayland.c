@@ -177,6 +177,7 @@ struct wayland_output {
 	} gl;
 
 	struct wp_tearing_control_v1 *tearing_control;
+	uint32_t current_tearing_presentation_hint;
 
 	// --- DRM SYNCOBJ STATE ---
 	struct wp_linux_drm_syncobj_surface_v1 *syncobj_surface;
@@ -533,6 +534,19 @@ static const struct zwp_linux_dmabuf_feedback_v1_listener dmabuf_feedback_listen
 };
 
 #ifdef ENABLE_EGL
+static bool surface_may_tear(struct wayland_output *output)
+{
+	struct weston_view *view;
+
+    wl_list_for_each(view, &output->base.compositor->view_list, link) {
+        if (view->surface->tear_control && view->surface->tear_control->may_tear) {
+			return true;
+        }
+    }
+
+	return false;
+}
+
 static int
 wayland_output_repaint_gl(struct weston_output *output_base)
 {
@@ -540,6 +554,22 @@ wayland_output_repaint_gl(struct weston_output *output_base)
 	struct wayland_backend *b = output->backend;
 	struct weston_compositor *ec = output->base.compositor;
 	pixman_region32_t damage;
+
+	if (b->parent.tearing_control_manager) {
+		uint32_t presentation_hint;
+
+		if (surface_may_tear(output)) {
+            presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
+		} else {
+			presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
+		}
+
+		if (output->current_tearing_presentation_hint != presentation_hint) {
+			weston_log("Tearing presentation hint: %d\n", presentation_hint);
+			wp_tearing_control_v1_set_presentation_hint(output->tearing_control, presentation_hint);
+			output->current_tearing_presentation_hint = presentation_hint;
+		}
+	}
 
 	pixman_region32_init(&damage);
 	weston_output_flush_damage_for_primary_plane(output_base, &damage);
@@ -1144,6 +1174,7 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 	if (b->parent.tearing_control_manager) {
 		output->tearing_control = wp_tearing_control_manager_v1_get_tearing_control(
 			b->parent.tearing_control_manager, output->parent.surface);
+		output->current_tearing_presentation_hint = UINT32_MAX;
 	}
 
 	if (b->parent.xdg_wm_base) {
@@ -1212,11 +1243,6 @@ wayland_output_enable(struct weston_output *base)
 
 	if (ret < 0)
 		return -1;
-
-	if (output->tearing_control) {
-		wp_tearing_control_v1_set_presentation_hint(
-			output->tearing_control,WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC);
-	}
 
 	switch (renderer->type) {
 #ifdef ENABLE_EGL
@@ -1324,6 +1350,7 @@ wayland_output_create(struct weston_backend *backend, const char *name)
 		return NULL;
 	}
 	output->title = title;
+    output->base.repaint_only_on_capture = true;
 
 	weston_output_init(&output->base, compositor, name);
 
