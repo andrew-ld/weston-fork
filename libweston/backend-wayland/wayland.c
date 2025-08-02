@@ -437,8 +437,9 @@ find_passthrough_candidate_view(struct weston_output *output_base) {
 }
 
 static void request_next_frame_callback(struct wayland_backend *b,
-                                        struct wayland_output *output) {
-  if (b->parent.presentation) {
+                                        struct wayland_output *output,
+                                        bool vsync) {
+  if (b->parent.presentation && vsync) {
     struct wp_presentation_feedback *feedback = wp_presentation_feedback(
         b->parent.presentation, output->parent.surface);
     wp_presentation_feedback_add_listener(
@@ -468,6 +469,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct weston_compositor *ec = output_base->compositor;
   struct weston_view *passthrough_view;
   struct weston_paint_node *pnode;
+  bool vsync;
 
   passthrough_view = find_passthrough_candidate_view(output_base);
 
@@ -476,8 +478,10 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
 
     if (passthrough_view || surface_may_tear(output)) {
       presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
+      vsync = false;
     } else {
       presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
+      vsync = true;
     }
 
     if (output->current_tearing_presentation_hint != presentation_hint) {
@@ -518,7 +522,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
         wl_surface_damage(output->parent.surface, 0, 0, output_base->width,
                           output_base->height);
 
-        request_next_frame_callback(b, output);
+        request_next_frame_callback(b, output, vsync);
         wl_surface_commit(output->parent.surface);
         wl_buffer_destroy(new_host_buffer);
       } else {
@@ -536,7 +540,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
 
     ec->renderer->repaint_output(&output->base, &damage, NULL);
 
-    request_next_frame_callback(b, output);
+    request_next_frame_callback(b, output, vsync);
 
     wl_surface_commit(output->parent.surface);
     wl_display_flush(b->parent.wl_display);
