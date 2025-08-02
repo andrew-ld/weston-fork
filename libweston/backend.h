@@ -130,22 +130,6 @@ struct weston_backend {
 	bool (*can_scanout_dmabuf)(struct weston_backend *backend,
 				   struct linux_dmabuf_buffer *buffer);
 
-	/**
-	 * @brief Hook called when a buffer is attached to a surface.
-	 *
-	 * This allows a backend to inspect a newly attached buffer and
-	 * potentially place a lock on it if it intends to use it for a
-	 * special purpose, like direct passthrough. This is called
-	 * synchronously during weston_surface_commit_state.
-	 *
-	 * @param backend The backend instance.
-	 * @param surface The surface the buffer was attached to.
-	 * @param buffer The newly attached buffer.
-	 */
-	 void (*passthrough_attach_buffer)(struct weston_backend *backend,
-		struct weston_surface *surface,
-		struct weston_buffer *buffer);
-
 	/** Identifies a particular backend_type from one
 	 * defined in weston_compositor_backend.
 	 */

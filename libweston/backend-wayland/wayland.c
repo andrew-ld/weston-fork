@@ -293,7 +293,7 @@ passthrough_cache_get_host_buffer(struct wayland_output *output,
     output->passthrough_cache.client_buffer = client_buffer;
     output->passthrough_cache.host_buffer = new_host_buffer;
   } else {
-    passthrough_cache_init(output);
+    passthrough_cache_clear(output);
     weston_log("zwp_linux_buffer_params_v1_create_immed failed!\n");
   }
 
@@ -2377,6 +2377,12 @@ static void create_cursor(struct wayland_backend *b,
   }
 }
 
+static inline bool
+wayland_can_scanout_dmabuf(struct weston_backend *backend,
+                           struct linux_dmabuf_buffer *dmabuf) {
+  return true;
+}
+
 static struct wayland_backend *
 wayland_backend_create(struct weston_compositor *compositor,
                        struct weston_wayland_backend_config *new_config) {
@@ -2450,6 +2456,7 @@ wayland_backend_create(struct weston_compositor *compositor,
   b->base.shutdown = wayland_shutdown;
   b->base.destroy = wayland_destroy;
   b->base.create_output = wayland_output_create;
+  b->base.can_scanout_dmabuf = wayland_can_scanout_dmabuf;
 
   loop = wl_display_get_event_loop(compositor->wl_display);
 
