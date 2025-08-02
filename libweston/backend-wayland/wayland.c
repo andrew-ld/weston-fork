@@ -25,6 +25,8 @@
  */
 
 #include "config.h"
+#include "libweston/linux-dmabuf.h"
+#include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
@@ -82,7 +84,6 @@
 #define WINDOW_MAX_HEIGHT 8192
 
 static const uint32_t wayland_formats[] = {
-    DRM_FORMAT_ARGB8888,
     DRM_FORMAT_XRGB8888,
 };
 
@@ -101,6 +102,7 @@ struct wayland_backend {
     struct zwp_relative_pointer_manager_v1 *relative_pointer_manager;
     struct wp_tearing_control_manager_v1 *tearing_control_manager;
     struct zxdg_decoration_manager_v1 *decoration_manager;
+    struct zwp_linux_dmabuf_v1 *linux_dmabuf;
 
     struct wp_presentation *presentation;
     clockid_t presentation_clock_id;
@@ -158,6 +160,7 @@ struct wayland_output {
   struct weston_mode native_mode;
 
   struct wl_callback *frame_cb;
+  struct weston_buffer *passthrough_buffer_in_flight;
 };
 
 struct wayland_parent_output {
@@ -259,6 +262,11 @@ static void frame_done(void *data, struct wl_callback *callback,
   struct wayland_output *output = data;
   struct timespec ts;
 
+  if (output->passthrough_buffer_in_flight) {
+    weston_buffer_backend_unlock(output->passthrough_buffer_in_flight);
+    output->passthrough_buffer_in_flight = NULL;
+  }
+
   assert(callback == output->frame_cb);
   wl_callback_destroy(callback);
   output->frame_cb = NULL;
@@ -319,6 +327,11 @@ static void feedback_handle_presented(void *data,
     presented_flags |= WESTON_FINISH_FRAME_TEARING;
   }
 
+  if (output->passthrough_buffer_in_flight) {
+    weston_buffer_backend_unlock(output->passthrough_buffer_in_flight);
+    output->passthrough_buffer_in_flight = NULL;
+  }
+
   weston_output_finish_frame(&output->base, &ts, presented_flags);
 }
 
@@ -326,6 +339,11 @@ static void
 feedback_handle_discarded(void *data,
                           struct wp_presentation_feedback *feedback) {
   struct wayland_output *output = data;
+
+  if (output->passthrough_buffer_in_flight) {
+    weston_buffer_backend_unlock(output->passthrough_buffer_in_flight);
+    output->passthrough_buffer_in_flight = NULL;
+  }
 
   weston_output_finish_frame(&output->base, NULL,
                              WP_PRESENTATION_FEEDBACK_INVALID);
@@ -355,63 +373,164 @@ wayland_output_start_repaint_loop(struct weston_output *output_base) {
   return 0;
 }
 
-#ifdef ENABLE_EGL
-static bool surface_may_tear(struct wayland_output *output) {
-  struct weston_view *view;
+static bool region_contains_box(const pixman_region32_t *region,
+                                const pixman_box32_t *box) {
+  pixman_region32_t intersection;
+  bool is_equal;
+  bool ret;
 
-  wl_list_for_each(view, &output->base.compositor->view_list, link) {
-    if (view->surface->tear_control && view->surface->tear_control->may_tear) {
-      return true;
-    }
+  if (!pixman_region32_not_empty(region))
+    return false;
+
+  if (box->x1 >= box->x2 || box->y1 >= box->y2)
+    return true;
+
+  pixman_region32_init(&intersection);
+  ret = pixman_region32_intersect_rect(&intersection, region, box->x1, box->y1,
+                                       box->x2 - box->x1, box->y2 - box->y1);
+  if (!ret) {
+    pixman_region32_fini(&intersection);
+    return false;
   }
 
-  return false;
+  pixman_region32_t box_region;
+  pixman_region32_init_rect(&box_region, box->x1, box->y1, box->x2 - box->x1,
+                            box->y2 - box->y1);
+
+  is_equal = pixman_region32_equal(&intersection, &box_region);
+
+  pixman_region32_fini(&box_region);
+  pixman_region32_fini(&intersection);
+
+  return is_equal;
 }
 
-static int wayland_output_repaint_gl(struct weston_output *output_base) {
-  struct wayland_output *output = to_wayland_output(output_base);
-  struct wayland_backend *b = output->backend;
-  struct weston_compositor *ec = output->base.compositor;
-  pixman_region32_t damage;
+static struct weston_view *
+find_passthrough_candidate_view(struct weston_output *output_base) {
+  struct weston_compositor *compositor = output_base->compositor;
+  struct weston_seat *seat;
+  struct weston_surface *focus_surface = NULL;
+  struct weston_view *candidate_view = NULL;
+  struct weston_paint_node *pnode;
 
-  if (b->parent.tearing_control_manager) {
-    uint32_t presentation_hint;
-
-    if (surface_may_tear(output)) {
-      presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
-    } else {
-      presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
-    }
-
-    if (output->current_tearing_presentation_hint != presentation_hint) {
-      weston_log("Tearing presentation hint: %d\n", presentation_hint);
-      wp_tearing_control_v1_set_presentation_hint(output->tearing_control,
-                                                  presentation_hint);
-      output->current_tearing_presentation_hint = presentation_hint;
+  wl_list_for_each(seat, &compositor->seat_list, link) {
+    struct weston_keyboard *keyboard = weston_seat_get_keyboard(seat);
+    if (keyboard && keyboard->focus) {
+      focus_surface = keyboard->focus;
+      break;
     }
   }
 
-  pixman_region32_init(&damage);
-  weston_output_flush_damage_for_primary_plane(output_base, &damage);
+  if (!focus_surface)
+    return NULL;
 
-  ec->renderer->repaint_output(&output->base, &damage, NULL);
+  wl_list_for_each(pnode, &output_base->paint_node_z_order_list, z_order_link) {
+    if (pnode->view->surface == focus_surface) {
+      candidate_view = pnode->view;
+      break;
+    }
+  }
 
+  if (!candidate_view)
+    return NULL;
+
+  if (!candidate_view->is_mapped || !candidate_view->surface->buffer_ref.buffer)
+    return NULL;
+
+  struct weston_surface *surface = candidate_view->surface;
+  pixman_box32_t surface_box = {0, 0, surface->width, surface->height};
+  if (!region_contains_box(&surface->pending.opaque, &surface_box))
+    return NULL;
+
+  pixman_box32_t *view_bbox = &candidate_view->transform.boundingbox.extents;
+  pixman_box32_t *output_bbox = &output_base->region.extents;
+  if (view_bbox->x1 != output_bbox->x1 || view_bbox->y1 != output_bbox->y1 ||
+      view_bbox->x2 != output_bbox->x2 || view_bbox->y2 != output_bbox->y2) {
+    return NULL;
+  }
+
+  return candidate_view;
+}
+
+static void request_next_frame_callback(struct wayland_backend *b,
+                                        struct wayland_output *output) {
   if (b->parent.presentation) {
-    struct wp_presentation_feedback *feedback;
-    feedback = wp_presentation_feedback(b->parent.presentation,
-                                        output->parent.surface);
+    struct wp_presentation_feedback *feedback = wp_presentation_feedback(
+        b->parent.presentation, output->parent.surface);
     wp_presentation_feedback_add_listener(
         feedback, &presentation_feedback_listener, output);
   } else {
     output->frame_cb = wl_surface_frame(output->parent.surface);
     wl_callback_add_listener(output->frame_cb, &frame_listener, output);
   }
+}
 
-  wl_surface_commit(output->parent.surface);
+#ifdef ENABLE_EGL
+static int wayland_output_repaint_gl(struct weston_output *output_base) {
+  struct wayland_output *output = to_wayland_output(output_base);
+  struct wayland_backend *b = output->backend;
+  struct weston_compositor *ec = output_base->compositor;
+  struct weston_view *passthrough_view;
+
+  passthrough_view = find_passthrough_candidate_view(output_base);
+
+  if (passthrough_view) {
+    struct weston_buffer *buffer = passthrough_view->surface->buffer_ref.buffer;
+    struct linux_dmabuf_buffer *dmabuf = NULL;
+
+    if (buffer && buffer->resource && buffer->type == WESTON_BUFFER_DMABUF)
+      dmabuf = linux_dmabuf_buffer_get(ec, buffer->resource);
+
+    if (b->parent.linux_dmabuf && dmabuf) {
+      struct zwp_linux_buffer_params_v1 *params;
+      struct wl_buffer *new_host_buffer;
+
+      params = zwp_linux_dmabuf_v1_create_params(b->parent.linux_dmabuf);
+      for (int i = 0; i < dmabuf->attributes.n_planes; i++) {
+        zwp_linux_buffer_params_v1_add(
+            params, dmabuf->attributes.fd[i], i, dmabuf->attributes.offset[i],
+            dmabuf->attributes.stride[i], dmabuf->attributes.modifier >> 32,
+            dmabuf->attributes.modifier & 0xFFFFFFFF);
+      }
+
+      new_host_buffer = zwp_linux_buffer_params_v1_create_immed(
+          params, dmabuf->attributes.width, dmabuf->attributes.height,
+          dmabuf->attributes.format, 0);
+      zwp_linux_buffer_params_v1_destroy(params);
+
+      if (new_host_buffer) {
+        wl_surface_attach(output->parent.surface, new_host_buffer, 0, 0);
+
+        wl_surface_damage(output->parent.surface, 0, 0, output_base->width,
+                          output_base->height);
+
+        request_next_frame_callback(b, output);
+        wl_surface_commit(output->parent.surface);
+        wl_buffer_destroy(new_host_buffer);
+      } else {
+        passthrough_view = NULL;
+      }
+    } else {
+      passthrough_view = NULL;
+    }
+  }
+
+  if (!passthrough_view) {
+    pixman_region32_t damage;
+    pixman_region32_init(&damage);
+    weston_output_flush_damage_for_primary_plane(output_base, &damage);
+
+    ec->renderer->repaint_output(&output->base, &damage, NULL);
+
+    request_next_frame_callback(b, output);
+
+    wl_surface_commit(output->parent.surface);
+    wl_display_flush(b->parent.wl_display);
+
+    pixman_region32_fini(&damage);
+  }
+
   wl_display_flush(b->parent.wl_display);
-
-  pixman_region32_fini(&damage);
-
   return 0;
 }
 #endif
@@ -2011,6 +2130,9 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
         wl_registry_bind(registry, name, &wp_presentation_interface, 1);
     wp_presentation_add_listener(b->parent.presentation, &presentation_listener,
                                  b);
+  } else if (strcmp(interface, "zwp_linux_dmabuf_v1") == 0 && version >= 4) {
+    b->parent.linux_dmabuf =
+        wl_registry_bind(registry, name, &zwp_linux_dmabuf_v1_interface, 4);
   }
 }
 
@@ -2259,6 +2381,14 @@ static void wayland_backend_destroy_backend(struct wayland_backend *b) {
 static void
 config_init_to_defaults(struct weston_wayland_backend_config *config) {}
 
+static void
+wayland_passthrough_attach_buffer(struct weston_backend *backend_base,
+                                  struct weston_surface *surface,
+                                  struct weston_buffer *buffer) {
+  if (buffer->type == WESTON_BUFFER_DMABUF)
+    weston_buffer_backend_lock(buffer);
+}
+
 WL_EXPORT int weston_backend_init(struct weston_compositor *compositor,
                                   struct weston_backend_config *config_base) {
   struct wayland_backend *b;
@@ -2284,6 +2414,8 @@ WL_EXPORT int weston_backend_init(struct weston_compositor *compositor,
 
   if (!b)
     return -1;
+
+  b->base.passthrough_attach_buffer = wayland_passthrough_attach_buffer;
 
   if (new_config.sprawl) {
     b->sprawl_across_outputs = true;
