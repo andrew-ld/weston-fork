@@ -218,7 +218,6 @@ struct wayland_input {
 
     struct {
       struct wl_surface *surface;
-      int32_t hx, hy;
     } cursor;
   } parent;
 
@@ -238,122 +237,11 @@ struct wayland_input {
 
   struct weston_pointer_axis_event vert, horiz;
 
-  struct {
-    struct wl_buffer *host_cursor_buffer;
-    struct weston_buffer *cached_weston_cursor_buffer;
-    bool host_cursor_enabled;
-  } passthrough_cursor;
-
   bool seat_initialized;
   struct wl_callback *initial_info_cb;
   char *name;
   enum wl_seat_capability caps;
 };
-
-static struct wl_buffer *create_shm_buffer_from_weston_buffer(
-    struct wayland_backend *b, struct wl_resource *client_buffer_resource) {
-  struct wl_shm_buffer *client_shm_buffer;
-  struct wl_shm_pool *host_pool;
-  struct wl_buffer *host_buffer;
-  void *client_data;
-  int32_t width, height, stride;
-  uint32_t format;
-  int fd = -1;
-  void *host_data = NULL;
-  size_t size;
-
-  client_shm_buffer = wl_shm_buffer_get(client_buffer_resource);
-  if (!client_shm_buffer) {
-    weston_log(
-        "Error: Expected a SHM buffer for cursor, but got something else.\n");
-    return NULL;
-  }
-
-  width = wl_shm_buffer_get_width(client_shm_buffer);
-  height = wl_shm_buffer_get_height(client_shm_buffer);
-  stride = wl_shm_buffer_get_stride(client_shm_buffer);
-  format = wl_shm_buffer_get_format(client_shm_buffer);
-  size = stride * height;
-
-  fd = os_create_anonymous_file(size);
-  if (fd < 0) {
-    weston_log("Error: Failed to create anonymous file for cursor SHM: %s\n",
-               strerror(errno));
-    return NULL;
-  }
-
-  host_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (host_data == MAP_FAILED) {
-    weston_log("Error: Failed to mmap new cursor SHM: %s\n", strerror(errno));
-    close(fd);
-    return NULL;
-  }
-
-  wl_shm_buffer_begin_access(client_shm_buffer);
-  client_data = wl_shm_buffer_get_data(client_shm_buffer);
-  memcpy(host_data, client_data, size);
-  wl_shm_buffer_end_access(client_shm_buffer);
-
-  host_pool = wl_shm_create_pool(b->parent.shm, fd, size);
-  if (!host_pool) {
-    weston_log("Error: wl_shm_create_pool failed for host cursor.\n");
-    munmap(host_data, size);
-    close(fd);
-    return NULL;
-  }
-
-  host_buffer =
-      wl_shm_pool_create_buffer(host_pool, 0, width, height, stride, format);
-
-  wl_shm_pool_destroy(host_pool);
-  munmap(host_data, size);
-  close(fd);
-
-  if (!host_buffer) {
-    weston_log("Error: wl_shm_pool_create_buffer failed for host cursor.\n");
-    return NULL;
-  }
-
-  return host_buffer;
-}
-
-static void wayland_input_clear_host_cursor_cache(struct wayland_input *input) {
-  if (input->passthrough_cursor.host_cursor_buffer) {
-    wl_buffer_destroy(input->passthrough_cursor.host_cursor_buffer);
-    input->passthrough_cursor.host_cursor_buffer = NULL;
-  }
-  input->passthrough_cursor.cached_weston_cursor_buffer = NULL;
-}
-
-static struct wl_buffer *
-wayland_input_update_host_cursor(struct wayland_input *input,
-                                 struct weston_pointer *pointer) {
-  struct wayland_backend *b = input->backend;
-  struct weston_buffer *current_cursor_wb = NULL;
-
-  if (pointer && pointer->sprite &&
-      pointer->sprite->surface->buffer_ref.buffer) {
-    current_cursor_wb = pointer->sprite->surface->buffer_ref.buffer;
-  }
-
-  if (current_cursor_wb !=
-      input->passthrough_cursor.cached_weston_cursor_buffer) {
-    wayland_input_clear_host_cursor_cache(input);
-
-    if (current_cursor_wb) {
-      struct wl_buffer *shm_buffer =
-          create_shm_buffer_from_weston_buffer(b, current_cursor_wb->resource);
-      if (shm_buffer) {
-        input->passthrough_cursor.host_cursor_buffer =
-            (struct wl_buffer *)shm_buffer;
-      }
-    }
-
-    input->passthrough_cursor.cached_weston_cursor_buffer = current_cursor_wb;
-  }
-
-  return input->passthrough_cursor.host_cursor_buffer;
-}
 
 static void passthrough_cache_init(struct wayland_output *output) {
   output->passthrough_cache.client_buffer = NULL;
@@ -707,34 +595,6 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
       wl_surface_attach(output->parent.surface, host_buffer, 0, 0);
       wl_surface_damage_buffer(output->parent.surface, 0, 0, INT32_MAX,
                                INT32_MAX);
-
-      if (input && input->parent.pointer) {
-        struct weston_pointer *pointer = weston_seat_get_pointer(&input->base);
-        struct wl_buffer *host_cursor_buffer =
-            wayland_input_update_host_cursor(input, pointer);
-
-        if (host_cursor_buffer) {
-          struct weston_surface *cursor_surface = pointer->sprite->surface;
-
-          wl_surface_attach(input->parent.cursor.surface, host_cursor_buffer, 0,
-                            0);
-          wl_surface_damage(input->parent.cursor.surface, 0, 0,
-                            cursor_surface->width, cursor_surface->height);
-
-          wl_surface_commit(input->parent.cursor.surface);
-
-          wl_pointer_set_cursor(input->parent.pointer, input->enter_serial,
-                                input->parent.cursor.surface,
-                                pointer->hotspot.c.x, pointer->hotspot.c.y);
-
-          input->passthrough_cursor.host_cursor_enabled = true;
-        } else if (input->passthrough_cursor.host_cursor_enabled) {
-          wl_pointer_set_cursor(input->parent.pointer, input->enter_serial,
-                                NULL, 0, 0);
-          input->passthrough_cursor.host_cursor_enabled = false;
-        }
-      }
-
       request_next_frame_callback(b, output, !async);
       wl_surface_commit(output->parent.surface);
     } else {
@@ -749,12 +609,6 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
       passthrough_cache_clear(output);
       output->output_using_dma = false;
       weston_log("Stopping DMA output, falling back to composition.\n");
-    }
-
-    if (input && input->passthrough_cursor.host_cursor_enabled) {
-      wl_pointer_set_cursor(input->parent.pointer, input->enter_serial, NULL, 0,
-                            0);
-      input->passthrough_cursor.host_cursor_enabled = false;
     }
 
     pixman_region32_t damage;
@@ -2152,8 +2006,6 @@ static void wayland_input_destroy(struct wayland_input *input) {
 
   if (input->seat_initialized)
     weston_seat_release(&input->base);
-
-  wayland_input_clear_host_cursor_cache(input);
 
   if (input->parent.keyboard) {
     if (input->seat_version >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
