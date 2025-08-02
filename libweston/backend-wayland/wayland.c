@@ -472,16 +472,15 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   bool vsync;
 
   passthrough_view = find_passthrough_candidate_view(output_base);
+  vsync = passthrough_view || surface_may_tear(output);
 
   if (b->parent.tearing_control_manager && output->tearing_control) {
     uint32_t presentation_hint;
 
-    if (passthrough_view || surface_may_tear(output)) {
+    if (vsync) {
       presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
-      vsync = false;
     } else {
       presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
-      vsync = true;
     }
 
     if (output->current_tearing_presentation_hint != presentation_hint) {
