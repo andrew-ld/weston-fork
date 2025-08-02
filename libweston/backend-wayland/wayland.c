@@ -539,7 +539,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
 
     ec->renderer->repaint_output(&output->base, &damage, NULL);
 
-    request_next_frame_callback(b, output, async);
+    request_next_frame_callback(b, output, !async);
 
     wl_surface_commit(output->parent.surface);
     wl_display_flush(b->parent.wl_display);
