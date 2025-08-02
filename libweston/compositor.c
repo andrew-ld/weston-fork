@@ -2863,6 +2863,29 @@ weston_buffer_destroy_handler(struct wl_listener *listener, void *data)
 	free(buffer);
 }
 
+WL_EXPORT void
+weston_buffer_backend_lock(struct weston_buffer *buffer)
+{
+	assert(buffer);
+	buffer->backend_lock_count++;
+}
+ 
+WL_EXPORT void
+weston_buffer_backend_unlock(struct weston_buffer *buffer)
+{
+	assert(buffer);
+	assert(buffer->backend_lock_count > 0);
+	buffer->backend_lock_count--;
+ 
+	if (buffer->backend_lock_count == 0 &&
+		buffer->busy_count == 0 &&
+		buffer->resource
+	) {
+		wl_buffer_send_release(buffer->resource);
+	}
+}
+
+
 WL_EXPORT struct weston_buffer *
 weston_buffer_from_resource(struct weston_compositor *ec,
 			    struct wl_resource *resource)
@@ -2993,6 +3016,7 @@ weston_buffer_reference(struct weston_buffer_reference *ref,
 		/* If the wl_buffer lives, then hold on to the weston_buffer,
 		 * but send a release event to the client */
 		if (old_ref.buffer->busy_count == 0 &&
+			old_ref.buffer->backend_lock_count == 0 &&
 		    old_ref.buffer->resource) {
 			assert(wl_resource_get_client(old_ref.buffer->resource));
 			wl_buffer_send_release(old_ref.buffer->resource);
@@ -3307,6 +3331,12 @@ weston_surface_attach(struct weston_surface *surface,
 	old_buffer = NULL;
 	weston_buffer_reference(&surface->buffer_ref, buffer,
 				BUFFER_MAY_BE_ACCESSED);
+
+	struct weston_backend *backend;
+	wl_list_for_each(backend, &surface->compositor->backend_list, link) {
+		if (backend->passthrough_attach_buffer)
+			backend->passthrough_attach_buffer(backend, surface, buffer);
+	}
 
 	return status;
 }

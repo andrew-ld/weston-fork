@@ -1454,6 +1454,9 @@ struct weston_buffer {
 	int32_t stride;
 	uint32_t busy_count;
 	uint32_t passive_count;
+
+	uint32_t backend_lock_count;
+
 	enum {
 		ORIGIN_TOP_LEFT, /* buffer content starts at (0,0) */
 		ORIGIN_BOTTOM_LEFT, /* buffer content starts at (0, height) */
@@ -2243,6 +2246,12 @@ weston_surface_copy_content(struct weston_surface *surface,
 struct weston_buffer *
 weston_buffer_from_resource(struct weston_compositor *ec,
 			    struct wl_resource *resource);
+
+void
+weston_buffer_backend_lock(struct weston_buffer *buffer);
+
+void
+weston_buffer_backend_unlock(struct weston_buffer *buffer);
 
 void
 weston_compositor_get_time(struct timespec *time);
