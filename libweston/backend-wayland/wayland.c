@@ -30,7 +30,6 @@
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
-#include "renderer-gl/gl-renderer-internal.h"
 #include "tearing-control-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
@@ -556,7 +555,6 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct wayland_backend *b = output->backend;
   struct weston_compositor *ec = output_base->compositor;
   struct weston_view *passthrough_view = NULL;
-  struct weston_paint_node *pnode;
   bool async;
   struct wayland_input *input = NULL;
 
@@ -620,13 +618,6 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
     request_next_frame_callback(b, output, !async);
     wl_surface_commit(output->parent.surface);
     pixman_region32_fini(&damage);
-  }
-
-  wl_list_for_each(pnode, &output_base->paint_node_z_order_list, z_order_link) {
-    struct weston_buffer *buffer = pnode->view->surface->buffer_ref.buffer;
-    if (buffer && buffer->backend_lock_count > 0) {
-      weston_buffer_backend_unlock(buffer);
-    }
   }
 
   wl_display_flush(b->parent.wl_display);
@@ -2386,14 +2377,6 @@ static void create_cursor(struct wayland_backend *b,
   }
 }
 
-static void
-wayland_passthrough_attach_buffer(struct weston_backend *backend_base,
-                                  struct weston_surface *surface,
-                                  struct weston_buffer *buffer) {
-  if (buffer->type == WESTON_BUFFER_DMABUF)
-    weston_buffer_backend_lock(buffer);
-}
-
 static struct wayland_backend *
 wayland_backend_create(struct weston_compositor *compositor,
                        struct weston_wayland_backend_config *new_config) {
@@ -2462,10 +2445,6 @@ wayland_backend_create(struct weston_compositor *compositor,
   default:
     weston_log("Unsupported renderer requested\n");
     goto err_display;
-  }
-
-  if (compositor->renderer->type == WESTON_RENDERER_GL) {
-    b->base.passthrough_attach_buffer = wayland_passthrough_attach_buffer;
   }
 
   b->base.shutdown = wayland_shutdown;
