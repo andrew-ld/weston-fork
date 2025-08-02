@@ -467,6 +467,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct wayland_backend *b = output->backend;
   struct weston_compositor *ec = output_base->compositor;
   struct weston_view *passthrough_view;
+  struct weston_paint_node *pnode;
 
   passthrough_view = find_passthrough_candidate_view(output_base);
 
@@ -541,6 +542,13 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
     wl_display_flush(b->parent.wl_display);
 
     pixman_region32_fini(&damage);
+  }
+
+  wl_list_for_each(pnode, &output_base->paint_node_z_order_list, z_order_link) {
+    struct weston_buffer *buffer = pnode->view->surface->buffer_ref.buffer;
+    if (buffer && buffer->backend_lock_count > 0) {
+      weston_buffer_backend_unlock(buffer);
+    }
   }
 
   wl_display_flush(b->parent.wl_display);
