@@ -2485,7 +2485,6 @@ wayland_passthrough_attach_buffer(struct weston_backend *backend_base,
 WL_EXPORT int weston_backend_init(struct weston_compositor *compositor,
                                   struct weston_backend_config *config_base) {
   struct wayland_backend *b;
-  struct wayland_parent_output *poutput;
   struct weston_wayland_backend_config new_config;
 
   if (config_base == NULL ||
@@ -2509,16 +2508,6 @@ WL_EXPORT int weston_backend_init(struct weston_compositor *compositor,
     return -1;
 
   b->base.passthrough_attach_buffer = wayland_passthrough_attach_buffer;
-
-  if (new_config.sprawl) {
-    b->sprawl_across_outputs = true;
-    wl_display_roundtrip(b->parent.wl_display);
-
-    wl_list_for_each(poutput, &b->parent.output_list, link)
-        wayland_head_create_for_parent_output(b, poutput);
-
-    return 0;
-  }
 
   if (!wayland_head_create(b, "wayland-fullscreen")) {
     weston_log("Unable to create a fullscreen head.\n");

@@ -39,7 +39,6 @@ extern "C" {
 struct weston_wayland_backend_config {
 	struct weston_backend_config base;
 	enum weston_renderer_type renderer;
-	bool sprawl;
 	char *display_name;
 	char *cursor_theme;
 	int cursor_size;

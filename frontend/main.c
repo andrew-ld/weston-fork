@@ -4153,7 +4153,6 @@ load_wayland_backend(struct weston_compositor *c,
 		{ WESTON_OPTION_STRING, "display", 0, &config.display_name },
 		{ WESTON_OPTION_BOOLEAN, "use-pixman", 0, &force_pixman },
 		{ WESTON_OPTION_INTEGER, "output-count", 0, &count },
-		{ WESTON_OPTION_BOOLEAN, "sprawl", 0, &config.sprawl },
 	};
 
 	parse_options(wayland_options, ARRAY_LENGTH(wayland_options), argc, argv);
