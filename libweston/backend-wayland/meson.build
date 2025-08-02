@@ -20,8 +20,6 @@ srcs_wlwl = [
 	tearing_control_v1_protocol_c,
 	xdg_decoration_unstable_v1_client_protocol_h,
 	xdg_decoration_unstable_v1_protocol_c,
-	linux_drm_syncobj_v1_protocol_c,
-	linux_drm_syncobj_v1_client_protocol_h,
 ]
 
 deps_wlwl = [

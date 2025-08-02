@@ -32,10 +32,10 @@
 #include "tearing-control-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
-#include "linux-drm-syncobj-v1-client-protocol.h"
 
 #include <EGL/egl.h>
 #include <assert.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -106,8 +106,6 @@ struct wayland_backend {
 		clockid_t presentation_clock_id;
 		bool presentation_clock_id_valid;
 
-		struct wp_linux_drm_syncobj_manager_v1 *syncobj_manager;
-
 		struct wl_list output_list;
 
 		struct wl_event_source *wl_source;
@@ -155,22 +153,6 @@ struct wayland_output {
 
 	struct wp_tearing_control_v1 *tearing_control;
 	uint32_t current_tearing_presentation_hint;
-
-	// --- DRM SYNCOBJ STATE ---
-	struct wp_linux_drm_syncobj_surface_v1 *syncobj_surface;
-
-	int drm_fd;
-
-	uint32_t acquire_timeline_handle;
-	int acquire_timeline_fd;
-	struct wp_linux_drm_syncobj_timeline_v1 *acquire_timeline;
-	uint64_t acquire_point;
-
-	uint32_t release_timeline_handle;
-	int release_timeline_fd;
-	struct wp_linux_drm_syncobj_timeline_v1 *release_timeline;
-	uint64_t release_point;
-	// --- DRM SYNCOBJ STATE ---
 
 	struct weston_mode mode;
 	struct weston_mode native_mode;
@@ -432,38 +414,7 @@ wayland_output_repaint_gl(struct weston_output *output_base)
 	pixman_region32_init(&damage);
 	weston_output_flush_damage_for_primary_plane(output_base, &damage);
 
-	if (output->syncobj_surface) {
-		if (output->release_point > 0) {
-			drmSyncobjTimelineWait(output->drm_fd,
-					       &output->release_timeline_handle,
-					       &output->release_point,
-					       1,
-					       500000000,
-					       DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
-					       NULL);
-		}
-
-		ec->renderer->repaint_output(&output->base, &damage, NULL);
-
-		output->acquire_point++;
-		drmSyncobjTimelineSignal(output->drm_fd,
-					 &output->acquire_timeline_handle,
-					 &output->acquire_point,
-					 1);
-
-		uint32_t acquire_hi = output->acquire_point >> 32;
-		uint32_t acquire_lo = output->acquire_point & 0xFFFFFFFF;
-		wp_linux_drm_syncobj_surface_v1_set_acquire_point(output->syncobj_surface,
-			output->acquire_timeline, acquire_hi, acquire_lo);
-
-		output->release_point++;
-		uint32_t release_hi = output->release_point >> 32;
-		uint32_t release_lo = output->release_point & 0xFFFFFFFF;
-		wp_linux_drm_syncobj_surface_v1_set_release_point(output->syncobj_surface,
-			output->release_timeline, release_hi, release_lo);
-	} else {
-		ec->renderer->repaint_output(&output->base, &damage, NULL);
-	}
+	ec->renderer->repaint_output(&output->base, &damage, NULL);
 
 	if (b->parent.presentation) {
 		struct wp_presentation_feedback *feedback;
@@ -530,19 +481,6 @@ wayland_output_disable(struct weston_output *base)
 #endif
 	default:
 		unreachable("invalid renderer");
-	}
-
-	if (output->syncobj_surface) {
-		wp_linux_drm_syncobj_surface_v1_destroy(output->syncobj_surface);
-		wp_linux_drm_syncobj_timeline_v1_destroy(output->acquire_timeline);
-		wp_linux_drm_syncobj_timeline_v1_destroy(output->release_timeline);
-
-		drmSyncobjDestroy(output->drm_fd, output->acquire_timeline_handle);
-		drmSyncobjDestroy(output->drm_fd, output->release_timeline_handle);
-
-		close(output->acquire_timeline_fd);
-		close(output->release_timeline_fd);
-		close(output->drm_fd);
 	}
 
 	wayland_backend_destroy_output_surface(output);
@@ -931,36 +869,9 @@ static const struct xdg_toplevel_listener xdg_toplevel_listener = {
 };
 
 static int
-create_syncobj_timeline(int drm_fd, uint32_t *handle_out, int *fd_out)
-{
-	uint32_t handle;
-	int fd;
-	int ret;
-
-	ret = drmSyncobjCreate(drm_fd, DRM_SYNCOBJ_CREATE_SIGNALED, &handle);
-	if (ret) {
-		weston_log("drmSyncobjCreate failed: %s\n", strerror(errno));
-		return -1;
-	}
-
-	ret = drmSyncobjHandleToFD(drm_fd, handle, &fd);
-	if (ret) {
-		weston_log("drmSyncobjHandleToFD failed: %s\n", strerror(errno));
-		drmSyncobjDestroy(drm_fd, handle);
-		return -1;
-	}
-
-	*handle_out = handle;
-	*fd_out = fd;
-
-	return 0;
-}
-
-static int
 wayland_backend_create_output_surface(struct wayland_output *output)
 {
 	struct wayland_backend *b = output->backend;
-	struct weston_renderer *renderer = b->compositor->renderer;
 
 	assert(!output->parent.surface);
 
@@ -977,44 +888,6 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 
 	wl_surface_set_user_data(output->parent.surface, output);
 	wl_surface_set_buffer_scale(output->parent.surface, 1);
-
-    if (b->parent.syncobj_manager && renderer->type == WESTON_RENDERER_GL) {
-		struct gl_renderer *gr = get_renderer(b->compositor);
-
-		uint64_t syncobj_drm_supported;
-
-		if (!drmGetCap(output->drm_fd, DRM_CAP_SYNCOBJ, &syncobj_drm_supported)) {
-			weston_log("Unable to get drm cap DRM_CAP_SYNCOBJ\n");
-		}
-
-		if (syncobj_drm_supported) {
-			output->drm_fd = open(gr->drm_device, O_RDWR | O_CLOEXEC);
-			assert(output->drm_fd >= 0);
-
-			create_syncobj_timeline(output->drm_fd,
-				&output->acquire_timeline_handle,&output->acquire_timeline_fd);
-			assert(output->acquire_timeline_handle != 0);
-			assert(output->acquire_timeline_fd != 0);
-
-			create_syncobj_timeline(output->drm_fd,
-					&output->release_timeline_handle,&output->release_timeline_fd);
-			assert(output->release_timeline_handle != 0);
-			assert(output->release_timeline_fd != 0);
-
-			output->acquire_timeline =
-				wp_linux_drm_syncobj_manager_v1_import_timeline(
-					b->parent.syncobj_manager, output->acquire_timeline_fd);
-			output->release_timeline =
-				wp_linux_drm_syncobj_manager_v1_import_timeline(
-					b->parent.syncobj_manager, output->release_timeline_fd);
-
-			output->acquire_point = 0;
-			output->release_point = 0;
-
-			output->syncobj_surface = wp_linux_drm_syncobj_manager_v1_get_surface(
-				b->parent.syncobj_manager, output->parent.surface);
-		}
-    }
 
 	if (b->parent.tearing_control_manager) {
 		output->tearing_control = wp_tearing_control_manager_v1_get_tearing_control(
@@ -1055,14 +928,6 @@ wayland_backend_create_output_surface(struct wayland_output *output)
 		if (decoration) {
 			zxdg_toplevel_decoration_v1_set_mode(decoration,ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
 		}
-	}
-
-	if (output->syncobj_surface) {
-		wp_linux_drm_syncobj_surface_v1_set_acquire_point(output->syncobj_surface,
-			output->acquire_timeline, 0, 0);
-
-		wp_linux_drm_syncobj_surface_v1_set_release_point(output->syncobj_surface,
-			output->release_timeline, 0, 0);
 	}
 
 	return 0;
@@ -2316,9 +2181,6 @@ registry_handle_global(void *data, struct wl_registry *registry, uint32_t name,
 		b->parent.presentation = wl_registry_bind(registry, name,
 						   &wp_presentation_interface, 1);
 		wp_presentation_add_listener(b->parent.presentation,&presentation_listener, b);
-	} else if (strcmp(interface, "wp_linux_drm_syncobj_manager_v1") == 0) {
-		b->parent.syncobj_manager = wl_registry_bind(registry, name,
-					 &wp_linux_drm_syncobj_manager_v1_interface, 1);
 	}
 }
 
@@ -2402,9 +2264,6 @@ wayland_destroy(struct weston_backend *backend)
 
 	wl_list_for_each_safe(input, next_input, &b->pending_input_list, link)
 		wayland_input_destroy(input);
-
-	if (b->parent.syncobj_manager)
-		wp_linux_drm_syncobj_manager_v1_destroy(b->parent.syncobj_manager);
 
 	if (b->parent.presentation)
 		wp_presentation_destroy(b->parent.presentation);
