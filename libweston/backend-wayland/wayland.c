@@ -2364,6 +2364,14 @@ static void create_cursor(struct wayland_backend *b,
   }
 }
 
+static void
+wayland_passthrough_attach_buffer(struct weston_backend *backend_base,
+                                  struct weston_surface *surface,
+                                  struct weston_buffer *buffer) {
+  if (buffer->type == WESTON_BUFFER_DMABUF)
+    weston_buffer_backend_lock(buffer);
+}
+
 static struct wayland_backend *
 wayland_backend_create(struct weston_compositor *compositor,
                        struct weston_wayland_backend_config *new_config) {
@@ -2434,6 +2442,10 @@ wayland_backend_create(struct weston_compositor *compositor,
     goto err_display;
   }
 
+  if (compositor->renderer->type == WESTON_RENDERER_GL) {
+    b->base.passthrough_attach_buffer = wayland_passthrough_attach_buffer;
+  }
+
   b->base.shutdown = wayland_shutdown;
   b->base.destroy = wayland_destroy;
   b->base.create_output = wayland_output_create;
@@ -2474,14 +2486,6 @@ static void wayland_backend_destroy_backend(struct wayland_backend *b) {
 static void
 config_init_to_defaults(struct weston_wayland_backend_config *config) {}
 
-static void
-wayland_passthrough_attach_buffer(struct weston_backend *backend_base,
-                                  struct weston_surface *surface,
-                                  struct weston_buffer *buffer) {
-  if (buffer->type == WESTON_BUFFER_DMABUF)
-    weston_buffer_backend_lock(buffer);
-}
-
 WL_EXPORT int weston_backend_init(struct weston_compositor *compositor,
                                   struct weston_backend_config *config_base) {
   struct wayland_backend *b;
@@ -2506,8 +2510,6 @@ WL_EXPORT int weston_backend_init(struct weston_compositor *compositor,
 
   if (!b)
     return -1;
-
-  b->base.passthrough_attach_buffer = wayland_passthrough_attach_buffer;
 
   if (!wayland_head_create(b, "wayland-fullscreen")) {
     weston_log("Unable to create a fullscreen head.\n");
