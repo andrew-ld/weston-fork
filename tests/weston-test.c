@@ -436,8 +436,8 @@ send_axis(struct wl_client *client, struct wl_resource *resource,
 	timespec_from_proto(&time, tv_sec_hi, tv_sec_lo, tv_nsec);
 	axis_event.axis = axis;
 	axis_event.value = wl_fixed_to_double(value);
-	axis_event.has_discrete = false;
-	axis_event.discrete = 0;
+	axis_event.has_v120 = false;
+	axis_event.v120 = 0;
 
 	notify_axis(seat, &time, &axis_event);
 }

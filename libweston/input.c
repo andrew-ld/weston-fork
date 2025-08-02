@@ -669,6 +669,44 @@ default_grab_pointer_button(struct weston_pointer_grab *grab,
 	}
 }
 
+static void
+weston_pointer_get_accumulated_values(struct wl_resource *resource,
+				      struct weston_pointer_axis_event *event,
+				      int *discrete,
+				      double *axis)
+{
+	struct weston_pointer *pointer = wl_resource_get_user_data(resource);
+	int32_t *scroll_remainder;
+	double *axis_remainder;
+	*discrete = 0;
+	*axis = 0;
+
+	switch (event->axis) {
+	case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
+		scroll_remainder = &pointer->scroll_remainder_x;
+		axis_remainder = &pointer->axis_remainder_x;
+		break;
+	case WL_POINTER_AXIS_VERTICAL_SCROLL:
+		scroll_remainder = &pointer->scroll_remainder_y;
+		axis_remainder = &pointer->axis_remainder_y;
+		break;
+	default:
+		return;
+	}
+
+	*scroll_remainder += event->v120;
+	*axis_remainder += event->value;
+
+	if (abs(*scroll_remainder) < 120)
+		return;
+
+	*discrete = *scroll_remainder/120;
+	*axis = (*discrete * 120 * *axis_remainder) / *scroll_remainder;
+
+	*scroll_remainder -= *discrete * 120;
+	*axis_remainder -= *axis;
+}
+
 /** Send wl_pointer.axis events to focused resources.
  *
  * \param pointer The pointer where the axis events originates from.
@@ -694,21 +732,37 @@ weston_pointer_send_axis(struct weston_pointer *pointer,
 	resource_list = &pointer->focus_client->pointer_resources;
 	msecs = timespec_to_msec(time);
 	wl_resource_for_each(resource, resource_list) {
-		if (event->has_discrete &&
-		    wl_resource_get_version(resource) >=
-		    WL_POINTER_AXIS_DISCRETE_SINCE_VERSION)
-			wl_pointer_send_axis_discrete(resource, event->axis,
-						      event->discrete);
+		int version = wl_resource_get_version(resource);
+		double axis_value = event->value;
 
-		if (event->value) {
+		if (event->has_v120) {
+			if (version >= WL_POINTER_AXIS_VALUE120_SINCE_VERSION) {
+				if (event->v120 != 0)
+					wl_pointer_send_axis_value120(resource,
+								      event->axis,
+								      event->v120);
+			} else if (version >=
+				   WL_POINTER_AXIS_DISCRETE_SINCE_VERSION) {
+				int discrete;
+				weston_pointer_get_accumulated_values(resource,
+								event,
+								&discrete,
+								&axis_value);
+				if (discrete)
+					wl_pointer_send_axis_discrete(resource,
+								event->axis,
+								discrete);
+			}
+		}
+
+		if (axis_value) {
 			send_timestamps_for_input_resource(resource,
 							   &pointer->timestamps_list,
 							   time);
 			wl_pointer_send_axis(resource, msecs,
 					     event->axis,
-					     wl_fixed_from_double(event->value));
-		} else if (wl_resource_get_version(resource) >=
-			 WL_POINTER_AXIS_STOP_SINCE_VERSION) {
+					     wl_fixed_from_double(axis_value));
+		} else if (version >= WL_POINTER_AXIS_STOP_SINCE_VERSION) {
 			send_timestamps_for_input_resource(resource,
 							   &pointer->timestamps_list,
 							   time);
@@ -1969,6 +2023,12 @@ weston_pointer_set_focus(struct weston_pointer *pointer,
 
 		focus_resource_list = &pointer->focus_client->pointer_resources;
 		wl_resource_for_each(resource, focus_resource_list) {
+			struct weston_pointer *p = wl_resource_get_user_data(resource);
+
+			p->scroll_remainder_x = 0;
+			p->scroll_remainder_y = 0;
+			p->axis_remainder_x = 0;
+			p->axis_remainder_y = 0;
 			wl_pointer_send_enter(resource,
 					      serial,
 					      view->surface->resource,
@@ -4337,7 +4397,7 @@ weston_seat_init(struct weston_seat *seat, struct weston_compositor *ec,
 	wl_signal_init(&seat->tablet_tool_added_signal);
 
 	seat->global = wl_global_create(ec->wl_display, &wl_seat_interface,
-					MIN(wl_seat_interface.version, 7),
+					MIN(wl_seat_interface.version, 8),
 					seat, bind_seat);
 
 	seat->compositor = ec;

@@ -1507,17 +1507,17 @@ static void input_handle_axis(void *data, struct wl_pointer *pointer,
 
   weston_event.axis = axis;
   weston_event.value = wl_fixed_to_double(value);
-  weston_event.has_discrete = false;
+  weston_event.has_v120 = false;
 
-  if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL && input->vert.has_discrete) {
-    weston_event.has_discrete = true;
-    weston_event.discrete = input->vert.discrete;
-    input->vert.has_discrete = false;
+  if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL && input->vert.has_v120) {
+    weston_event.has_v120 = true;
+    weston_event.v120 = input->vert.v120;
+    input->vert.has_v120 = false;
   } else if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL &&
-             input->horiz.has_discrete) {
-    weston_event.has_discrete = true;
-    weston_event.discrete = input->horiz.discrete;
-    input->horiz.has_discrete = false;
+             input->horiz.has_v120) {
+    weston_event.has_v120 = true;
+    weston_event.v120 = input->horiz.v120;
+    input->horiz.has_v120 = false;
   }
 
   timespec_from_msec(&ts, time);
@@ -1560,11 +1560,24 @@ static void input_handle_axis_discrete(void *data, struct wl_pointer *pointer,
   struct wayland_input *input = data;
 
   if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
-    input->vert.has_discrete = true;
-    input->vert.discrete = discrete;
+    input->vert.has_v120 = true;
+    input->vert.v120 = discrete * 120;
   } else if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
-    input->horiz.has_discrete = true;
-    input->horiz.discrete = discrete;
+    input->horiz.has_v120 = true;
+    input->horiz.v120 = discrete * 120;
+  }
+}
+
+static void input_handle_axis_v120(void *data, struct wl_pointer *pointer,
+                                   uint32_t axis, int32_t v120) {
+  struct wayland_input *input = data;
+
+  if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+    input->vert.has_v120 = true;
+    input->vert.v120 = v120;
+  } else if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+    input->horiz.has_v120 = true;
+    input->horiz.v120 = v120;
   }
 }
 
@@ -1573,8 +1586,7 @@ static const struct wl_pointer_listener pointer_listener = {
     input_handle_motion,        input_handle_button,
     input_handle_axis,          input_handle_frame,
     input_handle_axis_source,   input_handle_axis_stop,
-    input_handle_axis_discrete,
-};
+    input_handle_axis_discrete, input_handle_axis_v120};
 
 static void input_handle_keymap(void *data, struct wl_keyboard *keyboard,
                                 uint32_t format, int fd, uint32_t size) {

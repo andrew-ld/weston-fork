@@ -132,6 +132,8 @@ struct display {
 
 	int data_device_manager_version;
 	struct wp_viewporter *viewporter;
+
+	int wl_seat_version;
 };
 
 struct tablet {
@@ -3652,6 +3654,12 @@ input_get_modifiers(struct input *input)
 	return input->modifiers;
 }
 
+uint32_t
+input_get_seat_version(struct input *input)
+{
+	return input->seat_version;
+}
+
 struct widget *
 input_get_focus_widget(struct input *input)
 {
@@ -6048,7 +6056,7 @@ static void
 display_add_input(struct display *d, uint32_t id, int display_seat_version)
 {
 	struct input *input;
-	int seat_version = MIN(display_seat_version, 7);
+	int seat_version = MIN(display_seat_version, 8);
 
 	input = xzalloc(sizeof *input);
 	input->display = d;

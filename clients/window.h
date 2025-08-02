@@ -340,6 +340,12 @@ typedef void (*widget_axis_discrete_handler_t)(struct widget *widget,
 					       int32_t discrete,
 					       void *data);
 
+typedef void (*widget_axis_v120_handler_t)(struct widget *widget,
+					   struct input *input,
+					   uint32_t axis,
+					   int32_t v120,
+					   void *data);
+
 struct window *
 window_create(struct display *display);
 struct window *
@@ -726,6 +732,9 @@ input_get_touch(struct input *input, int32_t id, float *x, float *y);
 
 uint32_t
 input_get_modifiers(struct input *input);
+
+uint32_t
+input_get_seat_version(struct input *input);
 
 void
 touch_grab(struct input *input, int32_t touch_id);

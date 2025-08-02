@@ -77,6 +77,11 @@ struct image {
 
 	bool initialized;
 	cairo_matrix_t matrix;
+
+	struct {
+		double vert, horiz;
+		double vert_v120, horiz_v120;
+	} axis;
 };
 
 struct cli_render_intent_option {

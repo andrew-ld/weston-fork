@@ -1443,8 +1443,8 @@ x11_backend_deliver_button_event(struct x11_backend *b,
 		 * steps. Therefore move the axis by some pixels every step. */
 		if (is_button_pressed) {
 			weston_event.value = -DEFAULT_AXIS_STEP_DISTANCE;
-			weston_event.discrete = -1;
-			weston_event.has_discrete = true;
+			weston_event.v120 = -120;
+			weston_event.has_v120 = true;
 			weston_event.axis =
 				WL_POINTER_AXIS_VERTICAL_SCROLL;
 			weston_compositor_get_time(&time);
@@ -1455,8 +1455,8 @@ x11_backend_deliver_button_event(struct x11_backend *b,
 	case 5:
 		if (is_button_pressed) {
 			weston_event.value = DEFAULT_AXIS_STEP_DISTANCE;
-			weston_event.discrete = 1;
-			weston_event.has_discrete = true;
+			weston_event.v120 = 120;
+			weston_event.has_v120 = true;
 			weston_event.axis =
 				WL_POINTER_AXIS_VERTICAL_SCROLL;
 			weston_compositor_get_time(&time);
@@ -1467,8 +1467,8 @@ x11_backend_deliver_button_event(struct x11_backend *b,
 	case 6:
 		if (is_button_pressed) {
 			weston_event.value = -DEFAULT_AXIS_STEP_DISTANCE;
-			weston_event.discrete = -1;
-			weston_event.has_discrete = true;
+			weston_event.v120 = -120;
+			weston_event.has_v120 = true;
 			weston_event.axis =
 				WL_POINTER_AXIS_HORIZONTAL_SCROLL;
 			weston_compositor_get_time(&time);
@@ -1479,8 +1479,8 @@ x11_backend_deliver_button_event(struct x11_backend *b,
 	case 7:
 		if (is_button_pressed) {
 			weston_event.value = DEFAULT_AXIS_STEP_DISTANCE;
-			weston_event.discrete = 1;
-			weston_event.has_discrete = true;
+			weston_event.v120 = 120;
+			weston_event.has_v120 = true;
 			weston_event.axis =
 				WL_POINTER_AXIS_HORIZONTAL_SCROLL;
 			weston_compositor_get_time(&time);

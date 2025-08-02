@@ -346,6 +346,23 @@ axis_discrete_handler(struct widget *widget, struct input *input,
 	printf("axis discrete axis: %u value: %d\n", axis, discrete);
 }
 
+static void
+axis_v120_handler(struct widget *widget, struct input *input,
+		  uint32_t axis, int32_t v120, void *data)
+{
+	struct eventdemo *e = data;
+
+	if (!log_axis)
+		return;
+
+	e->print_pointer_frame = true;
+
+	printf("axis v120 axis: %s, v120: %d\n",
+	       axis == WL_POINTER_AXIS_VERTICAL_SCROLL ? "vertical" :
+							 "horizontal",
+	       v120);
+}
+
 /**
  * \brief CALLBACK function, Waylands informs about pointer motion
  * \param widget widget
@@ -442,7 +459,8 @@ eventdemo_create(struct display *d)
 				 axis_handler,
 				 axis_source_handler,
 				 axis_stop_handler,
-				 axis_discrete_handler);
+				 axis_discrete_handler,
+				 axis_v120_handler);
 
 	/* Initial drawing of the window */
 	window_schedule_resize(e->window, width, height);

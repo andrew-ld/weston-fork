@@ -212,8 +212,26 @@ static double
 normalize_scroll(struct libinput_event_pointer *pointer_event,
 		 enum libinput_pointer_axis axis)
 {
-	enum libinput_pointer_axis_source source;
+#if HAVE_LIBINPUT_AXIS_V120
+	struct libinput_event *event;
+
+	/* libinput < 0.8 sent wheel click events with value 10. Since 0.8
+	   the value is the angle of the click in degrees. To keep
+	   backwards-compat with existing clients, we just send multiples of
+	   the v120 click count (1 logical click == value 120).
+	 */
+
+	event = libinput_event_pointer_get_base_event(pointer_event);
+	if (libinput_event_get_type(event) == LIBINPUT_EVENT_POINTER_SCROLL_WHEEL)
+		return libinput_event_pointer_get_scroll_value_v120(pointer_event,
+								    axis) / 12.0;
+	else
+		return libinput_event_pointer_get_scroll_value(pointer_event,
+							       axis);
+
+#else
 	double value = 0.0;
+	enum libinput_pointer_axis_source source;
 
 	source = libinput_event_pointer_get_axis_source(pointer_event);
 	/* libinput < 0.8 sent wheel click events with value 10. Since 0.8
@@ -237,12 +255,17 @@ normalize_scroll(struct libinput_event_pointer *pointer_event,
 	}
 
 	return value;
+#endif
 }
 
 static int32_t
-get_axis_discrete(struct libinput_event_pointer *pointer_event,
+get_axis_v120(struct libinput_event_pointer *pointer_event,
 		  enum libinput_pointer_axis axis)
 {
+#if HAVE_LIBINPUT_AXIS_V120
+	return libinput_event_pointer_get_scroll_value_v120(pointer_event,
+							    axis);
+#else
 	enum libinput_pointer_axis_source source;
 
 	source = libinput_event_pointer_get_axis_source(pointer_event);
@@ -250,22 +273,23 @@ get_axis_discrete(struct libinput_event_pointer *pointer_event,
 	if (source != LIBINPUT_POINTER_AXIS_SOURCE_WHEEL)
 		return 0;
 
+	/* The v120 value is simply 120 * discrete */
 	return libinput_event_pointer_get_axis_value_discrete(pointer_event,
-							      axis);
+							      axis) * 120;
+#endif
 }
 
 static bool
 handle_pointer_axis(struct libinput_device *libinput_device,
-		    struct libinput_event_pointer *pointer_event)
+		    struct libinput_event_pointer *pointer_event,
+		    uint32_t wl_axis_source)
 {
 	struct evdev_device *device =
 		libinput_device_get_user_data(libinput_device);
 	double vert, horiz;
-	int32_t vert_discrete, horiz_discrete;
+	int32_t vert_v120, horiz_v120;
 	enum libinput_pointer_axis axis;
 	struct weston_pointer_axis_event weston_event;
-	enum libinput_pointer_axis_source source;
-	uint32_t wl_axis_source;
 	bool has_vert, has_horiz;
 	struct timespec time;
 
@@ -278,6 +302,49 @@ handle_pointer_axis(struct libinput_device *libinput_device,
 
 	if (!has_vert && !has_horiz)
 		return false;
+
+	notify_axis_source(device->seat, wl_axis_source);
+
+	timespec_from_usec(&time,
+			   libinput_event_pointer_get_time_usec(pointer_event));
+
+	if (has_vert) {
+		axis = LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL;
+		vert_v120 = get_axis_v120(pointer_event, axis);
+		vert = normalize_scroll(pointer_event, axis);
+
+		weston_event.axis = WL_POINTER_AXIS_VERTICAL_SCROLL;
+		weston_event.value = vert;
+		weston_event.v120 = vert_v120;
+		weston_event.has_v120 = (vert_v120 != 0);
+
+		notify_axis(device->seat, &time, &weston_event);
+	}
+
+	if (has_horiz) {
+		axis = LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL;
+		horiz_v120 = get_axis_v120(pointer_event, axis);
+		horiz = normalize_scroll(pointer_event, axis);
+
+		weston_event.axis = WL_POINTER_AXIS_HORIZONTAL_SCROLL;
+		weston_event.value = horiz;
+		weston_event.v120 = horiz_v120;
+		weston_event.has_v120 = (horiz_v120 != 0);
+
+		notify_axis(device->seat, &time, &weston_event);
+	}
+
+	return true;
+}
+
+#if !HAVE_LIBINPUT_AXIS_V120
+/* legacy event handling for pointer axis events pre libinput 1.19 */
+static bool handle_pointer_axis_legacy(struct libinput_device *libinput_device,
+				       struct libinput_event_pointer *pointer_event)
+{
+	enum libinput_pointer_axis_source source;
+	uint32_t wl_axis_source;
+	static int warned;
 
 	source = libinput_event_pointer_get_axis_source(pointer_event);
 	switch (source) {
@@ -296,39 +363,10 @@ handle_pointer_axis(struct libinput_device *libinput_device,
 		return false;
 	}
 
-	notify_axis_source(device->seat, wl_axis_source);
-
-	timespec_from_usec(&time,
-			   libinput_event_pointer_get_time_usec(pointer_event));
-
-	if (has_vert) {
-		axis = LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL;
-		vert_discrete = get_axis_discrete(pointer_event, axis);
-		vert = normalize_scroll(pointer_event, axis);
-
-		weston_event.axis = WL_POINTER_AXIS_VERTICAL_SCROLL;
-		weston_event.value = vert;
-		weston_event.discrete = vert_discrete;
-		weston_event.has_discrete = (vert_discrete != 0);
-
-		notify_axis(device->seat, &time, &weston_event);
-	}
-
-	if (has_horiz) {
-		axis = LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL;
-		horiz_discrete = get_axis_discrete(pointer_event, axis);
-		horiz = normalize_scroll(pointer_event, axis);
-
-		weston_event.axis = WL_POINTER_AXIS_HORIZONTAL_SCROLL;
-		weston_event.value = horiz;
-		weston_event.discrete = horiz_discrete;
-		weston_event.has_discrete = (horiz_discrete != 0);
-
-		notify_axis(device->seat, &time, &weston_event);
-	}
-
-	return true;
+	return handle_pointer_axis(libinput_device, pointer_event,
+				   wl_axis_source);
 }
+#endif
 
 static struct weston_output *
 touch_get_output(struct weston_touch_device *device)
@@ -794,10 +832,34 @@ evdev_device_process_event(struct libinput_event *event)
 				      libinput_event_get_pointer_event(event));
 		break;
 	case LIBINPUT_EVENT_POINTER_AXIS:
-		need_frame = handle_pointer_axis(
+		/* This event should be ignored from libinput 1.19, where we
+		 * have the WHEEL, FINGER, CONTINUOUS types instead */
+#if !HAVE_LIBINPUT_AXIS_V120
+		need_frame = handle_pointer_axis_legacy(
 				 libinput_device,
 				 libinput_event_get_pointer_event(event));
+#endif
 		break;
+#if HAVE_LIBINPUT_AXIS_V120
+	case LIBINPUT_EVENT_POINTER_SCROLL_WHEEL:
+		need_frame = handle_pointer_axis(
+				 libinput_device,
+				 libinput_event_get_pointer_event(event),
+				 WL_POINTER_AXIS_SOURCE_WHEEL);
+		break;
+	case LIBINPUT_EVENT_POINTER_SCROLL_FINGER:
+		need_frame = handle_pointer_axis(
+				 libinput_device,
+				 libinput_event_get_pointer_event(event),
+				 WL_POINTER_AXIS_SOURCE_FINGER);
+		break;
+	case LIBINPUT_EVENT_POINTER_SCROLL_CONTINUOUS:
+		need_frame = handle_pointer_axis(
+				 libinput_device,
+				 libinput_event_get_pointer_event(event),
+				 WL_POINTER_AXIS_SOURCE_CONTINUOUS);
+		break;
+#endif
 	case LIBINPUT_EVENT_TOUCH_DOWN:
 		handle_touch_down(libinput_device,
 				  libinput_event_get_touch_event(event));

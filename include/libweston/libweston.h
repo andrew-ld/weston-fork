@@ -511,8 +511,8 @@ struct weston_pointer_motion_event {
 struct weston_pointer_axis_event {
 	uint32_t axis;
 	double value;
-	bool has_discrete;
-	int32_t discrete;
+	bool has_v120;
+	int32_t v120;
 };
 
 struct weston_pointer_grab;
@@ -682,6 +682,9 @@ struct weston_pointer {
 	struct wl_listener output_destroy_listener;
 
 	struct wl_list timestamps_list;
+
+	int32_t scroll_remainder_x, scroll_remainder_y;
+	double axis_remainder_x, axis_remainder_y;
 };
 
 /** libinput style calibration matrix

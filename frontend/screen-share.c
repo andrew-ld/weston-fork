@@ -186,7 +186,7 @@ ss_seat_handle_axis(void *data, struct wl_pointer *pointer,
 
 	weston_event.axis = axis;
 	weston_event.value = wl_fixed_to_double(value);
-	weston_event.has_discrete = false;
+	weston_event.has_v120 = false;
 
 	timespec_from_msec(&ts, time);
 

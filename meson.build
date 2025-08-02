@@ -163,6 +163,9 @@ if dep_xkbcommon.version().version_compare('>= 1.8.0')
 		config_h.set('HAVE_COMPOSE_AND_KANA', '1')
 	endif
 endif
+have_libinput_axis_v120 = cc.has_function('libinput_event_pointer_get_scroll_value_v120',
+                                          dependencies: dep_libinput)
+config_h.set10('HAVE_LIBINPUT_AXIS_V120', have_libinput_axis_v120)
 
 dep_libevdev = dependency('libevdev')
 dep_libm = cc.find_library('m')

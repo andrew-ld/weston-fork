@@ -1451,6 +1451,28 @@ xf_mouseEvent(rdpInput *input, UINT16 flags, UINT16 x, UINT16 y)
 	} else if (flags & PTR_FLAGS_HWHEEL) {
 		if (rdp_notify_wheel_scroll(peerContext, flags, WL_POINTER_AXIS_HORIZONTAL_SCROLL))
 			need_frame = true;
+		struct weston_pointer_axis_event weston_event;
+		int value;
+
+		/* DEFAULT_AXIS_STEP_DISTANCE is stolen from compositor-x11.c
+		 * The RDP specs says the lower bits of flags contains the "the number of rotation
+		 * units the mouse wheel was rotated".
+		 *
+		 * https://blogs.msdn.microsoft.com/oldnewthing/20130123-00/?p=5473 explains the 120 value
+		 */
+		value = -(flags & 0xff);
+		if (flags & PTR_FLAGS_WHEEL_NEGATIVE)
+			value = -value;
+
+		weston_event.axis = WL_POINTER_AXIS_VERTICAL_SCROLL;
+		weston_event.value = DEFAULT_AXIS_STEP_DISTANCE * value;
+		weston_event.v120 = value;
+		weston_event.has_v120 = true;
+
+		weston_compositor_get_time(&time);
+
+		notify_axis(peerContext->item.seat, &time, &weston_event);
+		need_frame = true;
 	}
 
 	if (need_frame)
