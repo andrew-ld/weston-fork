@@ -667,7 +667,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct wayland_output *output = to_wayland_output(output_base);
   struct wayland_backend *b = output->backend;
   struct weston_compositor *ec = output_base->compositor;
-  struct weston_view *passthrough_view;
+  struct weston_view *passthrough_view = NULL;
   struct weston_paint_node *pnode;
   bool async;
   struct wayland_input *input = NULL;
@@ -676,7 +676,9 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
     input = wl_container_of(b->input_list.next, input, link);
   }
 
-  passthrough_view = find_passthrough_candidate_view(output_base);
+  if (b->parent.linux_dmabuf)
+    passthrough_view = find_passthrough_candidate_view(output_base);
+
   async = passthrough_view || surface_may_tear(output);
 
   if (output->tearing_control) {
@@ -694,7 +696,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
     weston_log("Using DMA output: %d\n", output->output_using_dma);
   }
 
-  if (passthrough_view && b->parent.linux_dmabuf) {
+  if (passthrough_view) {
     struct weston_buffer *client_buffer =
         passthrough_view->surface->buffer_ref.buffer;
     struct wl_buffer *host_buffer;
