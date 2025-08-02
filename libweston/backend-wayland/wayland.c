@@ -156,6 +156,8 @@ struct wayland_output {
   struct wp_tearing_control_v1 *tearing_control;
   uint32_t current_tearing_presentation_hint;
 
+  bool output_using_dma;
+
   struct weston_mode mode;
   struct weston_mode native_mode;
 
@@ -405,13 +407,34 @@ find_passthrough_candidate_view(struct weston_output *output_base) {
     }
   }
 
-  if (!focus_surface)
-    return NULL;
+  if (focus_surface) {
+    wl_list_for_each(pnode, &output_base->paint_node_z_order_list,
+                     z_order_link) {
+      if (pnode->view->surface == focus_surface) {
+        candidate_view = pnode->view;
+        break;
+      }
+    }
+  }
 
-  wl_list_for_each(pnode, &output_base->paint_node_z_order_list, z_order_link) {
-    if (pnode->view->surface == focus_surface) {
-      candidate_view = pnode->view;
-      break;
+  if (!candidate_view) {
+    int client_view_count = 0;
+    struct weston_view *top_client_view = NULL;
+
+    wl_list_for_each(pnode, &output_base->paint_node_z_order_list,
+                     z_order_link) {
+      struct weston_view *view = pnode->view;
+      if (!view->is_mapped || !view->surface->buffer_ref.buffer ||
+          view->layer_link.layer == &compositor->cursor_layer) {
+        continue;
+      }
+      client_view_count++;
+      if (!top_client_view)
+        top_client_view = view;
+    }
+
+    if (client_view_count == 1) {
+      candidate_view = top_client_view;
     }
   }
 
@@ -423,7 +446,7 @@ find_passthrough_candidate_view(struct weston_output *output_base) {
 
   struct weston_surface *surface = candidate_view->surface;
   pixman_box32_t surface_box = {0, 0, surface->width, surface->height};
-  if (!region_contains_box(&surface->pending.opaque, &surface_box))
+  if (!region_contains_box(&surface->opaque, &surface_box))
     return NULL;
 
   pixman_box32_t *view_bbox = &candidate_view->transform.boundingbox.extents;
@@ -469,10 +492,11 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct weston_compositor *ec = output_base->compositor;
   struct weston_view *passthrough_view;
   struct weston_paint_node *pnode;
-  bool async;
+  bool async, output_using_dma;
 
   passthrough_view = find_passthrough_candidate_view(output_base);
   async = passthrough_view || surface_may_tear(output);
+  output_using_dma = !!passthrough_view;
 
   if (output->tearing_control) {
     uint32_t presentation_hint;
@@ -489,6 +513,11 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
                                                   presentation_hint);
       output->current_tearing_presentation_hint = presentation_hint;
     }
+  }
+
+  if (output->output_using_dma != output_using_dma) {
+    output->output_using_dma = output_using_dma;
+    weston_log("Using DMA output: %d\n", output_using_dma);
   }
 
   if (passthrough_view) {
@@ -525,6 +554,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
         wl_surface_commit(output->parent.surface);
         wl_buffer_destroy(new_host_buffer);
       } else {
+        weston_log("zwp_linux_buffer_params_v1_create_immed fail!\n");
         passthrough_view = NULL;
       }
     } else {
@@ -1142,6 +1172,7 @@ wayland_output_create(struct weston_backend *backend, const char *name) {
   output->base.enable = wayland_output_enable;
   output->base.attach_head = wayland_output_attach_head;
   output->base.detach_head = wayland_output_detach_head;
+  output->output_using_dma = false;
 
   output->backend = b;
 
