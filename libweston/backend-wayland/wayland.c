@@ -474,7 +474,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   passthrough_view = find_passthrough_candidate_view(output_base);
   async = passthrough_view || surface_may_tear(output);
 
-  if (b->parent.tearing_control_manager && output->tearing_control) {
+  if (output->tearing_control) {
     uint32_t presentation_hint;
 
     if (async) {
