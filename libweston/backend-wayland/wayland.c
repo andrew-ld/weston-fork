@@ -738,6 +738,8 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
     } else {
       passthrough_view = NULL;
     }
+  } else {
+    passthrough_view = NULL;
   }
 
   if (!passthrough_view) {
