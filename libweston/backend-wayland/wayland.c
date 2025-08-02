@@ -465,6 +465,18 @@ static void request_next_frame_callback(struct wayland_backend *b,
   }
 }
 
+static bool surface_may_tear(struct wayland_output *output) {
+  struct weston_view *view;
+
+  wl_list_for_each(view, &output->base.compositor->view_list, link) {
+    if (view->surface->tear_control && view->surface->tear_control->may_tear) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 #ifdef ENABLE_EGL
 static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct wayland_output *output = to_wayland_output(output_base);
@@ -473,6 +485,23 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct weston_view *passthrough_view;
 
   passthrough_view = find_passthrough_candidate_view(output_base);
+
+  if (b->parent.tearing_control_manager && output->tearing_control) {
+    uint32_t presentation_hint;
+
+    if (passthrough_view || surface_may_tear(output)) {
+      presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
+    } else {
+      presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
+    }
+
+    if (output->current_tearing_presentation_hint != presentation_hint) {
+      weston_log("Setting tearing hint to %d.\n", presentation_hint);
+      wp_tearing_control_v1_set_presentation_hint(output->tearing_control,
+                                                  presentation_hint);
+      output->current_tearing_presentation_hint = presentation_hint;
+    }
+  }
 
   if (passthrough_view) {
     struct weston_buffer *buffer = passthrough_view->surface->buffer_ref.buffer;
