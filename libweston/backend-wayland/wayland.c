@@ -87,6 +87,11 @@ static const uint32_t wayland_formats[] = {
     DRM_FORMAT_XRGB8888,
 };
 
+struct passthrough_buffer_cache {
+  struct weston_buffer *client_buffer;
+  struct wl_buffer *host_buffer;
+};
+
 struct wayland_backend {
   struct weston_backend base;
   struct weston_compositor *compositor;
@@ -157,6 +162,7 @@ struct wayland_output {
   uint32_t current_tearing_presentation_hint;
 
   bool output_using_dma;
+  struct passthrough_buffer_cache passthrough_cache;
 
   struct weston_mode mode;
   struct weston_mode native_mode;
@@ -235,6 +241,64 @@ struct wayland_input {
   char *name;
   enum wl_seat_capability caps;
 };
+
+static void passthrough_cache_init(struct wayland_output *output) {
+  output->passthrough_cache.client_buffer = NULL;
+  output->passthrough_cache.host_buffer = NULL;
+}
+
+static void passthrough_cache_clear(struct wayland_output *output) {
+  if (output->passthrough_cache.host_buffer) {
+    wl_buffer_destroy(output->passthrough_cache.host_buffer);
+  }
+  passthrough_cache_init(output);
+}
+
+static struct wl_buffer *
+passthrough_cache_get_host_buffer(struct wayland_output *output,
+                                  struct weston_buffer *client_buffer) {
+  struct wayland_backend *b = output->backend;
+  struct linux_dmabuf_buffer *dmabuf;
+
+  if (!client_buffer || client_buffer->type != WESTON_BUFFER_DMABUF)
+    return NULL;
+
+  if (output->passthrough_cache.client_buffer == client_buffer) {
+    return output->passthrough_cache.host_buffer;
+  }
+
+  passthrough_cache_clear(output);
+
+  dmabuf = linux_dmabuf_buffer_get(b->compositor, client_buffer->resource);
+  if (!dmabuf)
+    return NULL;
+
+  struct zwp_linux_buffer_params_v1 *params;
+  struct wl_buffer *new_host_buffer;
+
+  params = zwp_linux_dmabuf_v1_create_params(b->parent.linux_dmabuf);
+  for (int i = 0; i < dmabuf->attributes.n_planes; i++) {
+    zwp_linux_buffer_params_v1_add(
+        params, dmabuf->attributes.fd[i], i, dmabuf->attributes.offset[i],
+        dmabuf->attributes.stride[i], dmabuf->attributes.modifier >> 32,
+        dmabuf->attributes.modifier & 0xFFFFFFFF);
+  }
+
+  new_host_buffer = zwp_linux_buffer_params_v1_create_immed(
+      params, dmabuf->attributes.width, dmabuf->attributes.height,
+      dmabuf->attributes.format, 0);
+  zwp_linux_buffer_params_v1_destroy(params);
+
+  if (new_host_buffer) {
+    output->passthrough_cache.client_buffer = client_buffer;
+    output->passthrough_cache.host_buffer = new_host_buffer;
+  } else {
+    passthrough_cache_init(output);
+    weston_log("zwp_linux_buffer_params_v1_create_immed failed!\n");
+  }
+
+  return new_host_buffer;
+}
 
 static void wayland_destroy(struct weston_backend *backend);
 
@@ -492,77 +556,51 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct weston_compositor *ec = output_base->compositor;
   struct weston_view *passthrough_view;
   struct weston_paint_node *pnode;
-  bool async, output_using_dma;
+  bool async;
 
   passthrough_view = find_passthrough_candidate_view(output_base);
   async = passthrough_view || surface_may_tear(output);
-  output_using_dma = !!passthrough_view;
 
   if (output->tearing_control) {
-    uint32_t presentation_hint;
-
-    if (async) {
-      presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
-    } else {
-      presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
-    }
-
-    if (output->current_tearing_presentation_hint != presentation_hint) {
-      weston_log("Setting tearing hint to %d.\n", presentation_hint);
+    uint32_t hint = async ? WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC
+                          : WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
+    if (output->current_tearing_presentation_hint != hint) {
       wp_tearing_control_v1_set_presentation_hint(output->tearing_control,
-                                                  presentation_hint);
-      output->current_tearing_presentation_hint = presentation_hint;
+                                                  hint);
+      output->current_tearing_presentation_hint = hint;
     }
   }
 
-  if (output->output_using_dma != output_using_dma) {
-    output->output_using_dma = output_using_dma;
-    weston_log("Using DMA output: %d\n", output_using_dma);
+  if (output->output_using_dma != !!passthrough_view) {
+    output->output_using_dma = !!passthrough_view;
+    weston_log("Using DMA output: %d\n", output->output_using_dma);
   }
 
-  if (passthrough_view) {
-    struct weston_buffer *buffer = passthrough_view->surface->buffer_ref.buffer;
-    struct linux_dmabuf_buffer *dmabuf = NULL;
+  if (passthrough_view && b->parent.linux_dmabuf) {
+    struct weston_buffer *client_buffer =
+        passthrough_view->surface->buffer_ref.buffer;
+    struct wl_buffer *host_buffer;
 
-    if (buffer && buffer->resource && buffer->type == WESTON_BUFFER_DMABUF)
-      dmabuf = linux_dmabuf_buffer_get(ec, buffer->resource);
+    host_buffer = passthrough_cache_get_host_buffer(output, client_buffer);
 
-    if (b->parent.linux_dmabuf && dmabuf) {
-      struct zwp_linux_buffer_params_v1 *params;
-      struct wl_buffer *new_host_buffer;
-
-      params = zwp_linux_dmabuf_v1_create_params(b->parent.linux_dmabuf);
-      for (int i = 0; i < dmabuf->attributes.n_planes; i++) {
-        zwp_linux_buffer_params_v1_add(
-            params, dmabuf->attributes.fd[i], i, dmabuf->attributes.offset[i],
-            dmabuf->attributes.stride[i], dmabuf->attributes.modifier >> 32,
-            dmabuf->attributes.modifier & 0xFFFFFFFF);
-      }
-
-      new_host_buffer = zwp_linux_buffer_params_v1_create_immed(
-          params, dmabuf->attributes.width, dmabuf->attributes.height,
-          dmabuf->attributes.format, 0);
-      zwp_linux_buffer_params_v1_destroy(params);
-
-      if (new_host_buffer) {
-        wl_surface_attach(output->parent.surface, new_host_buffer, 0, 0);
-
-        wl_surface_damage(output->parent.surface, 0, 0, output_base->width,
-                          output_base->height);
-
-        request_next_frame_callback(b, output, !async);
-        wl_surface_commit(output->parent.surface);
-        wl_buffer_destroy(new_host_buffer);
-      } else {
-        weston_log("zwp_linux_buffer_params_v1_create_immed fail!\n");
-        passthrough_view = NULL;
-      }
+    if (host_buffer) {
+      wl_surface_attach(output->parent.surface, host_buffer, 0, 0);
+      wl_surface_damage_buffer(output->parent.surface, 0, 0, INT32_MAX,
+                               INT32_MAX);
+      request_next_frame_callback(b, output, !async);
+      wl_surface_commit(output->parent.surface);
     } else {
       passthrough_view = NULL;
     }
   }
 
   if (!passthrough_view) {
+    if (output->output_using_dma) {
+      passthrough_cache_clear(output);
+      output->output_using_dma = false;
+      weston_log("Stopping DMA output, falling back to composition.\n");
+    }
+
     pixman_region32_t damage;
     pixman_region32_init(&damage);
     weston_output_flush_damage_for_primary_plane(output_base, &damage);
@@ -570,10 +608,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
     ec->renderer->repaint_output(&output->base, &damage, NULL);
 
     request_next_frame_callback(b, output, !async);
-
     wl_surface_commit(output->parent.surface);
-    wl_display_flush(b->parent.wl_display);
-
     pixman_region32_fini(&damage);
   }
 
@@ -648,6 +683,8 @@ static void wayland_output_destroy(struct weston_output *base) {
 
   if (output->frame_cb)
     wl_callback_destroy(output->frame_cb);
+
+  passthrough_cache_clear(output);
 
   free(output->title);
   free(output);
@@ -1165,6 +1202,7 @@ wayland_output_create(struct weston_backend *backend, const char *name) {
   output->title = title;
   output->base.repaint_only_on_capture = true;
 
+  passthrough_cache_init(output);
   weston_output_init(&output->base, compositor, name);
 
   output->base.destroy = wayland_output_destroy;
