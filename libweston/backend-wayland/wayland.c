@@ -469,15 +469,15 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct weston_compositor *ec = output_base->compositor;
   struct weston_view *passthrough_view;
   struct weston_paint_node *pnode;
-  bool vsync;
+  bool async;
 
   passthrough_view = find_passthrough_candidate_view(output_base);
-  vsync = passthrough_view || surface_may_tear(output);
+  async = passthrough_view || surface_may_tear(output);
 
   if (b->parent.tearing_control_manager && output->tearing_control) {
     uint32_t presentation_hint;
 
-    if (vsync) {
+    if (async) {
       presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;
     } else {
       presentation_hint = WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
@@ -521,7 +521,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
         wl_surface_damage(output->parent.surface, 0, 0, output_base->width,
                           output_base->height);
 
-        request_next_frame_callback(b, output, vsync);
+        request_next_frame_callback(b, output, !async);
         wl_surface_commit(output->parent.surface);
         wl_buffer_destroy(new_host_buffer);
       } else {
@@ -539,7 +539,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
 
     ec->renderer->repaint_output(&output->base, &damage, NULL);
 
-    request_next_frame_callback(b, output, vsync);
+    request_next_frame_callback(b, output, async);
 
     wl_surface_commit(output->parent.surface);
     wl_display_flush(b->parent.wl_display);
