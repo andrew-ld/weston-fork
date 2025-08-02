@@ -160,7 +160,6 @@ struct wayland_output {
   struct weston_mode native_mode;
 
   struct wl_callback *frame_cb;
-  struct weston_buffer *passthrough_buffer_in_flight;
 };
 
 struct wayland_parent_output {
@@ -262,11 +261,6 @@ static void frame_done(void *data, struct wl_callback *callback,
   struct wayland_output *output = data;
   struct timespec ts;
 
-  if (output->passthrough_buffer_in_flight) {
-    weston_buffer_backend_unlock(output->passthrough_buffer_in_flight);
-    output->passthrough_buffer_in_flight = NULL;
-  }
-
   assert(callback == output->frame_cb);
   wl_callback_destroy(callback);
   output->frame_cb = NULL;
@@ -327,11 +321,6 @@ static void feedback_handle_presented(void *data,
     presented_flags |= WESTON_FINISH_FRAME_TEARING;
   }
 
-  if (output->passthrough_buffer_in_flight) {
-    weston_buffer_backend_unlock(output->passthrough_buffer_in_flight);
-    output->passthrough_buffer_in_flight = NULL;
-  }
-
   weston_output_finish_frame(&output->base, &ts, presented_flags);
 }
 
@@ -339,11 +328,6 @@ static void
 feedback_handle_discarded(void *data,
                           struct wp_presentation_feedback *feedback) {
   struct wayland_output *output = data;
-
-  if (output->passthrough_buffer_in_flight) {
-    weston_buffer_backend_unlock(output->passthrough_buffer_in_flight);
-    output->passthrough_buffer_in_flight = NULL;
-  }
 
   weston_output_finish_frame(&output->base, NULL,
                              WP_PRESENTATION_FEEDBACK_INVALID);
