@@ -58,7 +58,6 @@
 #include <wayland-cursor.h>
 #include <wayland-server-core.h>
 #include <wayland-util.h>
-#include <xf86drm.h>
 
 #ifdef ENABLE_EGL
 #include "renderer-gl/gl-renderer.h"

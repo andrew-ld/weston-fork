@@ -34,7 +34,6 @@ deps_wlwl = [
 	dep_pixman,
 	dep_libweston_private,
 	dep_libdrm_headers,
-	dep_libdrm
 ]
 
 if get_option('renderer-gl')
