@@ -26,6 +26,7 @@
 
 #include "config.h"
 #include "content-type-v1-client-protocol.h"
+#include "idle-inhibit-unstable-v1-client-protocol.h"
 #include "libweston/linux-dmabuf.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
@@ -52,6 +53,7 @@
 #include <unistd.h>
 
 #include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
 #include <wayland-client.h>
 #include <wayland-cursor.h>
 #include <wayland-server-core.h>
@@ -133,6 +135,7 @@ struct wayland_backend {
     struct zwp_linux_dmabuf_v1 *linux_dmabuf;
     struct wp_content_type_manager_v1 *content_type_manager;
     struct wayland_dmabuf_feedback *linux_dmabuf_feedback;
+    struct zwp_idle_inhibit_manager_v1 *idle_inhibit_manager;
 
     struct wp_presentation *presentation;
     clockid_t presentation_clock_id;
@@ -167,7 +170,7 @@ struct wayland_output {
     struct wp_viewport *viewport;
     struct wp_content_type_v1 *content_type;
     struct zwp_linux_dmabuf_feedback_v1 *linux_dmabuf_feedback;
-    struct dmabuf_feedback *dmabuf_feedback, *pending_dmabuf_feedback;
+    struct zwp_idle_inhibitor_v1 *idle_inhibit;
 
     struct wl_output *output;
     uint32_t global_id;
@@ -725,6 +728,11 @@ wayland_backend_destroy_output_surface(struct wayland_output *output) {
   if (output->parent.linux_dmabuf_feedback) {
     zwp_linux_dmabuf_feedback_v1_destroy(output->parent.linux_dmabuf_feedback);
     output->parent.linux_dmabuf_feedback = NULL;
+  }
+
+  if (output->parent.idle_inhibit) {
+    zwp_idle_inhibitor_v1_destroy(output->parent.idle_inhibit);
+    output->parent.idle_inhibit = NULL;
   }
 
   wl_surface_destroy(output->parent.surface);
@@ -1320,6 +1328,11 @@ wayland_backend_create_output_surface(struct wayland_output *output) {
   if (b->parent.viewporter) {
     output->parent.viewport = wp_viewporter_get_viewport(
         b->parent.viewporter, output->parent.surface);
+  }
+
+  if (b->parent.idle_inhibit_manager) {
+    output->parent.idle_inhibit = zwp_idle_inhibit_manager_v1_create_inhibitor(
+        b->parent.idle_inhibit_manager, output->parent.surface);
   }
 
   if (b->parent.content_type_manager) {
@@ -2557,6 +2570,9 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
   } else if (strcmp(interface, "wp_content_type_manager_v1") == 0) {
     b->parent.content_type_manager = wl_registry_bind(
         registry, name, &wp_content_type_manager_v1_interface, 1);
+  } else if (strcmp(interface, "zwp_idle_inhibit_manager_v1") == 0) {
+    b->parent.idle_inhibit_manager = wl_registry_bind(
+        registry, name, &zwp_idle_inhibit_manager_v1_interface, 1);
   }
 }
 
@@ -2661,6 +2677,9 @@ static void wayland_destroy(struct weston_backend *backend) {
 
   if (b->parent.compositor)
     wl_compositor_destroy(b->parent.compositor);
+
+  if (b->parent.idle_inhibit_manager)
+    zwp_idle_inhibit_manager_v1_destroy(b->parent.idle_inhibit_manager);
 
   if (b->parent.linux_dmabuf_feedback) {
     struct wayland_tranche *tranche, *tmp;
