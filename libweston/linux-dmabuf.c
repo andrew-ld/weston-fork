@@ -27,6 +27,7 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -569,6 +570,7 @@ err_mmap:
 	close(format_table->fd);
 err_fd:
 	wl_array_release(&format_table->renderer_formats_indices);
+	wl_array_release(&format_table->scanout_formats_indices);
 	free(format_table);
 	return NULL;
 }

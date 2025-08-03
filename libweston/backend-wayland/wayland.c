@@ -76,6 +76,11 @@
 #include <libweston/pixel-formats.h>
 #include <libweston/windowed-output-api.h>
 
+static const uint32_t fallback_wayland_formats[] = {
+    DRM_FORMAT_ARGB8888,
+    DRM_FORMAT_XRGB8888,
+};
+
 #define WINDOW_TITLE "Weston Compositor"
 
 #define WINDOW_MIN_WIDTH 128
@@ -104,10 +109,6 @@ struct wayland_dmabuf_feedback {
   size_t format_table_size;
   dev_t main_device_id;
   struct wl_list tranches; // wayland_tranche
-};
-
-static const uint32_t fallback_wayland_formats[] = {
-    DRM_FORMAT_XRGB8888,
 };
 
 struct passthrough_buffer_cache {
@@ -154,9 +155,6 @@ struct wayland_backend {
   /* These struct wayland_input objects are waiting for the outer
    * compositor to provide a name and initial capabilities. */
   struct wl_list pending_input_list;
-
-  const struct pixel_format_info **formats;
-  unsigned int formats_count;
 };
 
 struct wayland_output {
@@ -780,14 +778,79 @@ static void wayland_output_destroy(struct weston_output *base) {
   free(output);
 }
 
+static const struct pixel_format_info **
+get_host_formats(struct weston_compositor *compositor, unsigned *count_out,
+                 struct wl_array *indices) {
+  struct weston_dmabuf_feedback_format_table *table =
+      compositor->dmabuf_feedback_format_table;
+  uint32_t *formats_list = NULL;
+  const struct pixel_format_info **info_array = NULL;
+  unsigned count = 0;
+  *count_out = 0;
+
+  if (!table || indices->size == 0)
+    return NULL;
+
+  size_t num_indices = indices->size / sizeof(uint16_t);
+  formats_list = zalloc(num_indices * sizeof(uint32_t));
+
+  if (!formats_list)
+    return NULL;
+
+  uint16_t *idx;
+  wl_array_for_each(idx, indices) {
+    if (*idx < table->size / sizeof(struct dmabuf_format_table_entry)) {
+      if (count < num_indices) {
+        uint32_t format_code = table->data[*idx].format;
+        if (pixel_format_get_info(format_code)) {
+          formats_list[count++] = table->data[*idx].format;
+        }
+      }
+    }
+  }
+
+  if (count > 0) {
+    info_array = pixel_format_get_array(formats_list, count);
+    *count_out = count;
+  }
+
+  free(formats_list);
+
+  return info_array;
+}
+
 #ifdef ENABLE_EGL
 static int wayland_output_init_gl_renderer(struct wayland_output *output) {
   const struct weston_mode *mode = output->base.current_mode;
-  struct wayland_backend *b = output->backend;
   const struct weston_renderer *renderer;
+  struct weston_compositor *ec = output->base.compositor;
+  const struct pixel_format_info **egl_formats = NULL;
+  unsigned num_egl_formats = 0;
+
+  if (ec->dmabuf_feedback_format_table) {
+    egl_formats = get_host_formats(
+        ec, &num_egl_formats,
+        &ec->dmabuf_feedback_format_table->scanout_formats_indices);
+
+    if (!egl_formats || num_egl_formats == 0) {
+      egl_formats = get_host_formats(
+          ec, &num_egl_formats,
+          &ec->dmabuf_feedback_format_table->renderer_formats_indices);
+    }
+
+    weston_log("Using host formats, count: %u\n", num_egl_formats);
+  }
+
+  if (!egl_formats || num_egl_formats == 0) {
+    egl_formats = pixel_format_get_array(
+        fallback_wayland_formats, ARRAY_LENGTH(fallback_wayland_formats));
+    num_egl_formats = ARRAY_LENGTH(fallback_wayland_formats);
+    weston_log("No host formats found, using fallback for EGL.\n");
+  }
+
   struct gl_renderer_output_options options = {
-      .formats = b->formats,
-      .formats_count = b->formats_count,
+      .formats = egl_formats,
+      .formats_count = num_egl_formats,
   };
 
   options.area.x = 0;
@@ -2701,8 +2764,6 @@ static void wayland_destroy(struct weston_backend *backend) {
 
   wl_cursor_theme_destroy(b->cursor_theme);
 
-  free(b->formats);
-
   wl_registry_destroy(b->parent.registry);
   wl_display_flush(b->parent.wl_display);
   wl_display_disconnect(b->parent.wl_display);
@@ -2776,10 +2837,6 @@ wayland_backend_create(struct weston_compositor *compositor,
 
   create_cursor(b, new_config);
 
-  b->formats_count = ARRAY_LENGTH(fallback_wayland_formats);
-  b->formats =
-      pixel_format_get_array(fallback_wayland_formats, b->formats_count);
-
   switch (renderer) {
   case WESTON_RENDERER_AUTO:
   case WESTON_RENDERER_GL: {
@@ -2787,8 +2844,6 @@ wayland_backend_create(struct weston_compositor *compositor,
         .egl_platform = EGL_PLATFORM_WAYLAND_KHR,
         .egl_native_display = b->parent.wl_display,
         .egl_surface_type = EGL_WINDOW_BIT,
-        .formats = b->formats,
-        .formats_count = b->formats_count,
     };
 
     if (weston_compositor_init_renderer(compositor, WESTON_RENDERER_GL,
@@ -2825,7 +2880,6 @@ err_display:
   wl_display_disconnect(b->parent.wl_display);
 err_compositor:
   wl_list_remove(&b->base.link);
-  free(b->formats);
   free(b);
   return NULL;
 }
@@ -2836,7 +2890,6 @@ static void wayland_backend_destroy_backend(struct wayland_backend *b) {
   wl_cursor_theme_destroy(b->cursor_theme);
 
   wl_list_remove(&b->base.link);
-  free(b->formats);
   free(b);
 }
 
