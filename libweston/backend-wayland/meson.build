@@ -23,7 +23,7 @@ srcs_wlwl = [
 	linux_dmabuf_unstable_v1_protocol_c,
 	linux_dmabuf_unstable_v1_client_protocol_h,
 	content_type_v1_protocol_c,
-	content_type_v1_client_protocol_h
+	content_type_v1_client_protocol_h,
 ]
 
 deps_wlwl = [
