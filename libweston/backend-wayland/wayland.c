@@ -579,12 +579,13 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
   if (b->parent.linux_dmabuf && !is_cursor_visible_on_output(output_base))
     passthrough_view = find_passthrough_candidate_view(output_base);
 
-  async = passthrough_view || surface_may_tear(output);
+  async = surface_may_tear(output);
 
   if (output->tearing_control) {
     uint32_t hint = async ? WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC
                           : WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
     if (output->current_tearing_presentation_hint != hint) {
+      weston_log("Using presentation hint: %d\n", hint);
       wp_tearing_control_v1_set_presentation_hint(output->tearing_control,
                                                   hint);
       output->current_tearing_presentation_hint = hint;
