@@ -68,7 +68,6 @@
 #include "renderer-gl/gl-renderer.h"
 #include "shared/cairo-util.h"
 #include "shared/helpers.h"
-#include "shared/os-compatibility.h"
 #include "shared/timespec-util.h"
 #include "shared/weston-drm-fourcc.h"
 #include "xdg-shell-client-protocol.h"
@@ -1151,18 +1150,13 @@ out_close:
   feedback->format_table_size = 0;
 }
 
-static void
-dmabuf_feedback_handle_done(void *data,
-                            struct zwp_linux_dmabuf_feedback_v1 *feedback) {
-  struct wayland_backend *b = data;
+static void dmabuf_feedback_update_nested_from_host(struct wayland_backend *b) {
   struct weston_compositor *ec = b->compositor;
   struct weston_dmabuf_feedback_format_table *new_table;
   struct wayland_dmabuf_feedback *host_feedback =
       b->parent.linux_dmabuf_feedback;
   struct wayland_tranche *host_tranche;
   struct weston_dmabuf_feedback *new_default_feedback;
-
-  dmabuf_feedback_parse_format_table(host_feedback);
 
   if (host_feedback->formats.arr.size == 0 ||
       wl_list_empty(&host_feedback->tranches)) {
@@ -1207,6 +1201,14 @@ dmabuf_feedback_handle_done(void *data,
   weston_log("Updated nested compositor's DMA-BUF feedback to match host.\n");
 }
 
+static void
+dmabuf_feedback_handle_done(void *data,
+                            struct zwp_linux_dmabuf_feedback_v1 *feedback) {
+  struct wayland_backend *b = data;
+  dmabuf_feedback_parse_format_table(b->parent.linux_dmabuf_feedback);
+  dmabuf_feedback_update_nested_from_host(b);
+}
+
 static void dmabuf_feedback_handle_format_table(
     void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback, int32_t fd,
     uint32_t size) {
@@ -1223,8 +1225,7 @@ static void dmabuf_feedback_handle_format_table(
 
 static void dmabuf_feedback_handle_main_device(
     void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback,
-    struct wl_array *device) // <-- The data arrives here
-{
+    struct wl_array *device) {
   struct wayland_backend *b = data;
   struct wayland_dmabuf_feedback *dmabuf_feedback =
       b->parent.linux_dmabuf_feedback;
@@ -1237,7 +1238,8 @@ static void dmabuf_feedback_handle_main_device(
 
 static void dmabuf_feedback_handle_tranche_done(
     void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback) {
-  /* Unused */
+  struct wayland_backend *b = data;
+  dmabuf_feedback_update_nested_from_host(b);
 }
 
 static void dmabuf_feedback_handle_tranche_target_device(
