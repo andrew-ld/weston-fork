@@ -68,7 +68,6 @@
 #include "pixman-renderer.h"
 #include "presentation-time-server-protocol.h"
 #include "renderer-gl/gl-renderer.h"
-#include "shared/cairo-util.h"
 #include "shared/helpers.h"
 #include "shared/timespec-util.h"
 #include "shared/weston-drm-fourcc.h"
@@ -2709,8 +2708,6 @@ static void wayland_destroy(struct weston_backend *backend) {
   wl_display_flush(b->parent.wl_display);
   wl_display_disconnect(b->parent.wl_display);
 
-  cleanup_after_cairo();
-
   free(b);
 }
 
@@ -2840,7 +2837,6 @@ static void wayland_backend_destroy_backend(struct wayland_backend *b) {
   wl_cursor_theme_destroy(b->cursor_theme);
 
   wl_list_remove(&b->base.link);
-  cleanup_after_cairo();
   free(b->formats);
   free(b);
 }

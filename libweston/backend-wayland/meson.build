@@ -34,8 +34,6 @@ deps_wlwl = [
 	dep_pixman,
 	dep_libweston_private,
 	dep_libdrm_headers,
-	dep_lib_cairo_shared,
-	dep_lib_renderer_borders,
 	dep_libdrm
 ]
 
@@ -46,10 +44,6 @@ if get_option('renderer-gl')
 	endif
 	deps_wlwl += d
 	deps_wlwl += dep_egl # for gl-renderer.h
-endif
-
-if get_option('renderer-vulkan')
-	deps_wlwl += dep_vulkan # for vulkan-renderer.h
 endif
 
 plugin_wlwl = shared_library(
