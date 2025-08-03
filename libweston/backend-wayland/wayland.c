@@ -549,6 +549,20 @@ static bool surface_may_tear(struct wayland_output *output) {
   return false;
 }
 
+static bool is_cursor_visible_on_output(struct weston_output *output_base) {
+  struct weston_compositor *compositor = output_base->compositor;
+  struct weston_view *view;
+
+  wl_list_for_each(view, &compositor->cursor_layer.view_list.link,
+                   layer_link.link) {
+    if (view->is_mapped && (view->output_mask & (1u << output_base->id))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 #ifdef ENABLE_EGL
 static int wayland_output_repaint_gl(struct weston_output *output_base) {
   struct wayland_output *output = to_wayland_output(output_base);
@@ -562,7 +576,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
     input = wl_container_of(b->input_list.next, input, link);
   }
 
-  if (b->parent.linux_dmabuf)
+  if (b->parent.linux_dmabuf && !is_cursor_visible_on_output(output_base))
     passthrough_view = find_passthrough_candidate_view(output_base);
 
   async = passthrough_view || surface_may_tear(output);
