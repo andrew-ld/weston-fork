@@ -811,7 +811,9 @@ get_host_formats(struct weston_compositor *compositor, unsigned *count_out,
 
   if (count > 0) {
     info_array = pixel_format_get_array(formats_list, count);
-    *count_out = count;
+    if (info_array) {
+      *count_out = count;
+    }
   }
 
   free(formats_list);
