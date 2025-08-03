@@ -25,6 +25,7 @@
  */
 
 #include "config.h"
+#include "content-type-v1-client-protocol.h"
 #include "libweston/linux-dmabuf.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
@@ -109,6 +110,7 @@ struct wayland_backend {
     struct wp_tearing_control_manager_v1 *tearing_control_manager;
     struct zxdg_decoration_manager_v1 *decoration_manager;
     struct zwp_linux_dmabuf_v1 *linux_dmabuf;
+    struct wp_content_type_manager_v1 *content_type_manager;
 
     struct wp_presentation *presentation;
     clockid_t presentation_clock_id;
@@ -141,6 +143,7 @@ struct wayland_output {
   struct {
     struct wl_surface *surface;
     struct wp_viewport *viewport;
+    struct wp_content_type_v1 *content_type;
 
     struct wl_output *output;
     uint32_t global_id;
@@ -659,6 +662,11 @@ wayland_backend_destroy_output_surface(struct wayland_output *output) {
     output->parent.xdg_surface = NULL;
   }
 
+  if (output->parent.content_type) {
+    wp_content_type_v1_destroy(output->parent.content_type);
+    output->parent.content_type = NULL;
+  }
+
   wl_surface_destroy(output->parent.surface);
   output->parent.surface = NULL;
 }
@@ -1049,6 +1057,17 @@ wayland_backend_create_output_surface(struct wayland_output *output) {
   if (b->parent.viewporter) {
     output->parent.viewport = wp_viewporter_get_viewport(
         b->parent.viewporter, output->parent.surface);
+  }
+
+  if (b->parent.content_type_manager) {
+    output->parent.content_type =
+        wp_content_type_manager_v1_get_surface_content_type(
+            b->parent.content_type_manager, output->parent.surface);
+
+    if (output->parent.content_type) {
+      wp_content_type_v1_set_content_type(output->parent.content_type,
+                                          WP_CONTENT_TYPE_V1_TYPE_GAME);
+    }
   }
 
   wl_surface_set_user_data(output->parent.surface, output);
@@ -2254,6 +2273,9 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
   } else if (strcmp(interface, "zwp_linux_dmabuf_v1") == 0 && version >= 4) {
     b->parent.linux_dmabuf =
         wl_registry_bind(registry, name, &zwp_linux_dmabuf_v1_interface, 4);
+  } else if (strcmp(interface, "wp_content_type_manager_v1") == 0) {
+    b->parent.content_type_manager = wl_registry_bind(
+        registry, name, &wp_content_type_manager_v1_interface, 1);
   }
 }
 
@@ -2346,6 +2368,9 @@ static void wayland_destroy(struct weston_backend *backend) {
 
   if (b->parent.viewporter)
     wp_viewporter_destroy(b->parent.viewporter);
+
+  if (b->parent.tearing_control_manager)
+    wp_content_type_manager_v1_destroy(b->parent.content_type_manager);
 
   if (b->parent.shm)
     wl_shm_destroy(b->parent.shm);

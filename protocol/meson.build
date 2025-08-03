@@ -47,6 +47,7 @@ generated_protocols = [
 	[ 'xdg-shell', 'stable' ],
 	[ 'xwayland-shell', 'staging', 'v1' ],
 	[ 'linux-drm-syncobj', 'staging', 'v1' ],
+	[ 'content-type', 'staging', 'v1' ],
 ]
 
 foreach proto: generated_protocols
