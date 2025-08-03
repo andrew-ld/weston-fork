@@ -1179,9 +1179,18 @@ static void dmabuf_feedback_update_nested_from_host(struct wayland_backend *b) {
   wl_list_for_each(host_tranche, &host_feedback->tranches, link) {
     struct weston_dmabuf_feedback_tranche *new_tranche;
 
+    int32_t preference;
+
+    if (host_tranche->flags &
+        ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT) {
+      preference = SCANOUT_PREF;
+    } else {
+      preference = RENDERER_PREF;
+    }
+
     new_tranche = weston_dmabuf_feedback_tranche_create(
         new_default_feedback, new_table, host_tranche->target_device,
-        host_tranche->flags, RENDERER_PREF);
+        host_tranche->flags, preference);
 
     if (new_tranche) {
       wl_array_copy(&new_tranche->formats_indices, &host_tranche->indices);
