@@ -581,9 +581,8 @@ find_passthrough_candidate_view(struct weston_output *output_base) {
 }
 
 static void request_next_frame_callback(struct wayland_backend *b,
-                                        struct wayland_output *output,
-                                        bool vsync) {
-  if (b->parent.presentation && vsync) {
+                                        struct wayland_output *output) {
+  if (b->parent.presentation) {
     struct wp_presentation_feedback *feedback = wp_presentation_feedback(
         b->parent.presentation, output->parent.surface);
     wp_presentation_feedback_add_listener(
@@ -665,7 +664,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
       wl_surface_attach(output->parent.surface, host_buffer, 0, 0);
       wl_surface_damage_buffer(output->parent.surface, 0, 0, INT32_MAX,
                                INT32_MAX);
-      request_next_frame_callback(b, output, !async);
+      request_next_frame_callback(b, output);
       wl_surface_commit(output->parent.surface);
     } else {
       passthrough_view = NULL;
@@ -687,7 +686,7 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
 
     ec->renderer->repaint_output(&output->base, &damage, NULL);
 
-    request_next_frame_callback(b, output, !async);
+    request_next_frame_callback(b, output);
     wl_surface_commit(output->parent.surface);
     pixman_region32_fini(&damage);
   }
