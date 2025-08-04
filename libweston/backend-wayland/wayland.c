@@ -110,6 +110,7 @@ struct wayland_dmabuf_feedback {
   size_t format_table_size;
   dev_t main_device_id;
   struct wl_list tranches; // wayland_tranche
+  struct wayland_tranche *pending_tranche;
 };
 
 struct passthrough_buffer_cache {
@@ -281,6 +282,7 @@ static void wayland_dmabuf_feedback_init(
   *wayland_dmabuf_feedback = zalloc(sizeof(**wayland_dmabuf_feedback));
   wl_list_init(&(*wayland_dmabuf_feedback)->tranches);
   (*wayland_dmabuf_feedback)->format_table_fd = -1;
+  (*wayland_dmabuf_feedback)->pending_tranche = NULL;
 }
 
 static void wayland_dmabuf_feedback_destroy(
@@ -292,12 +294,18 @@ static void wayland_dmabuf_feedback_destroy(
   }
 
   weston_drm_format_array_fini(&wayland_dmabuf_feedback->formats);
-  if (wayland_dmabuf_feedback->format_table_fd >= 0)
+
+  if (wayland_dmabuf_feedback->format_table_fd >= 0) {
     close(wayland_dmabuf_feedback->format_table_fd);
+  }
 
   wl_list_for_each_safe(tranche, tmp, &wayland_dmabuf_feedback->tranches,
                         link) {
     wayland_tranche_destroy(tranche);
+  }
+
+  if (wayland_dmabuf_feedback->pending_tranche) {
+    wayland_tranche_destroy(wayland_dmabuf_feedback->pending_tranche);
   }
 
   free(wayland_dmabuf_feedback);
@@ -1307,7 +1315,8 @@ static void dmabuf_feedback_update_nested_from_host(struct wayland_backend *b) {
 
   ec->dmabuf_feedback_format_table = new_table;
   ec->default_dmabuf_feedback = new_default_feedback;
-  b->parent.current_linux_dmabuf_feedback = b->parent.pending_linux_dmabuf_feedback;
+  b->parent.current_linux_dmabuf_feedback =
+      b->parent.pending_linux_dmabuf_feedback;
   wayland_dmabuf_feedback_init(&b->parent.pending_linux_dmabuf_feedback);
 
   weston_log("Updated nested compositor's DMA-BUF feedback to match host.\n");
@@ -1351,7 +1360,13 @@ static void dmabuf_feedback_handle_main_device(
 static void dmabuf_feedback_handle_tranche_done(
     void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback) {
   struct wayland_backend *b = data;
-  dmabuf_feedback_update_nested_from_host(b);
+  struct wayland_dmabuf_feedback *dmabuf_feedback =
+      b->parent.pending_linux_dmabuf_feedback;
+  struct wayland_tranche *tranche = dmabuf_feedback->pending_tranche;
+
+  assert(tranche);
+  wl_list_insert(&dmabuf_feedback->tranches, &tranche->link);
+  dmabuf_feedback->pending_tranche = NULL;
 }
 
 static void dmabuf_feedback_handle_tranche_target_device(
@@ -1362,13 +1377,15 @@ static void dmabuf_feedback_handle_tranche_target_device(
       b->parent.pending_linux_dmabuf_feedback;
   struct wayland_tranche *tranche;
 
+  assert(!dmabuf_feedback->pending_tranche);
+
   tranche = zalloc(sizeof(*tranche));
   wl_array_init(&tranche->indices);
 
   if (device->size >= sizeof(dev_t))
     memcpy(&tranche->target_device, device->data, sizeof(dev_t));
 
-  wl_list_insert(&dmabuf_feedback->tranches, &tranche->link);
+  dmabuf_feedback->pending_tranche = tranche;
 }
 
 static void dmabuf_feedback_handle_tranche_flags(
@@ -1376,12 +1393,9 @@ static void dmabuf_feedback_handle_tranche_flags(
   struct wayland_backend *b = data;
   struct wayland_dmabuf_feedback *dmabuf_feedback =
       b->parent.pending_linux_dmabuf_feedback;
-  struct wayland_tranche *tranche;
+  struct wayland_tranche *tranche = dmabuf_feedback->pending_tranche;
 
-  if (wl_list_empty(&dmabuf_feedback->tranches))
-    return;
-
-  tranche = wl_container_of(dmabuf_feedback->tranches.next, tranche, link);
+  assert(tranche);
   tranche->flags = flags;
 }
 
@@ -1391,12 +1405,9 @@ static void dmabuf_feedback_handle_tranche_formats(
   struct wayland_backend *b = data;
   struct wayland_dmabuf_feedback *dmabuf_feedback =
       b->parent.pending_linux_dmabuf_feedback;
-  struct wayland_tranche *tranche;
+  struct wayland_tranche *tranche = dmabuf_feedback->pending_tranche;
 
-  if (wl_list_empty(&dmabuf_feedback->tranches))
-    return;
-
-  tranche = wl_container_of(dmabuf_feedback->tranches.next, tranche, link);
+  assert(tranche);
   wl_array_copy(&tranche->indices, indices);
 }
 
