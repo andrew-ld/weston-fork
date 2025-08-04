@@ -28,6 +28,7 @@
 #include "content-type-v1-client-protocol.h"
 #include "idle-inhibit-unstable-v1-client-protocol.h"
 #include "libweston/linux-dmabuf.h"
+#include "libweston/zalloc.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
@@ -134,6 +135,7 @@ struct wayland_backend {
     struct zwp_linux_dmabuf_v1 *linux_dmabuf;
     struct wp_content_type_manager_v1 *content_type_manager;
     struct wayland_dmabuf_feedback *linux_dmabuf_feedback;
+    struct wayland_dmabuf_feedback *pending_linux_dmabuf_feedback;
     struct zwp_idle_inhibit_manager_v1 *idle_inhibit_manager;
 
     struct wp_presentation *presentation;
@@ -272,6 +274,33 @@ static void wayland_tranche_destroy(struct wayland_tranche *tranche) {
   wl_array_release(&tranche->indices);
   wl_list_remove(&tranche->link);
   free(tranche);
+}
+
+static void wayland_dmabuf_feedback_init(
+    struct wayland_dmabuf_feedback **wayland_dmabuf_feedback) {
+  *wayland_dmabuf_feedback = zalloc(sizeof(**wayland_dmabuf_feedback));
+  wl_list_init(&(*wayland_dmabuf_feedback)->tranches);
+  (*wayland_dmabuf_feedback)->format_table_fd = -1;
+}
+
+static void wayland_dmabuf_feedback_destroy(
+    struct wayland_dmabuf_feedback *wayland_dmabuf_feedback) {
+  struct wayland_tranche *tranche, *tmp;
+
+  if (wayland_dmabuf_feedback->proxy) {
+    zwp_linux_dmabuf_feedback_v1_destroy(wayland_dmabuf_feedback->proxy);
+  }
+
+  weston_drm_format_array_fini(&wayland_dmabuf_feedback->formats);
+  if (wayland_dmabuf_feedback->format_table_fd >= 0)
+    close(wayland_dmabuf_feedback->format_table_fd);
+
+  wl_list_for_each_safe(tranche, tmp, &wayland_dmabuf_feedback->tranches,
+                        link) {
+    wayland_tranche_destroy(tranche);
+  }
+
+  free(wayland_dmabuf_feedback);
 }
 
 static void passthrough_cache_init(struct wayland_output *output) {
@@ -495,8 +524,10 @@ find_passthrough_candidate_view(struct weston_output *output_base) {
   struct weston_view *candidate_view = NULL;
   struct weston_paint_node *pnode;
   struct wayland_backend *b = to_wayland_backend(output_base->backend);
+  struct wayland_dmabuf_feedback *linux_dmabuf_feedback =
+      b->parent.linux_dmabuf_feedback;
 
-  if (!b->parent.linux_dmabuf_feedback) {
+  if (!linux_dmabuf_feedback) {
     return NULL;
   }
 
@@ -566,7 +597,7 @@ find_passthrough_candidate_view(struct weston_output *output_base) {
   struct weston_drm_format *host_format;
 
   host_format = weston_drm_format_array_find_format(
-      &b->parent.linux_dmabuf_feedback->formats, dmabuf->attributes.format);
+      &linux_dmabuf_feedback->formats, dmabuf->attributes.format);
 
   if (!host_format) {
     return NULL;
@@ -1207,7 +1238,7 @@ dmabuf_feedback_parse_format_table(struct wayland_dmabuf_feedback *feedback) {
           weston_drm_format_array_add_format(&feedback->formats, entry->format);
     }
 
-    if (format) {
+    if (format && !weston_drm_format_has_modifier(format, entry->modifier)) {
       weston_drm_format_add_modifier(format, entry->modifier);
     }
   }
@@ -1224,7 +1255,7 @@ static void dmabuf_feedback_update_nested_from_host(struct wayland_backend *b) {
   struct weston_compositor *ec = b->compositor;
   struct weston_dmabuf_feedback_format_table *new_table;
   struct wayland_dmabuf_feedback *host_feedback =
-      b->parent.linux_dmabuf_feedback;
+      b->parent.pending_linux_dmabuf_feedback;
   struct wayland_tranche *host_tranche;
   struct weston_dmabuf_feedback *new_default_feedback;
 
@@ -1276,6 +1307,8 @@ static void dmabuf_feedback_update_nested_from_host(struct wayland_backend *b) {
 
   ec->dmabuf_feedback_format_table = new_table;
   ec->default_dmabuf_feedback = new_default_feedback;
+  b->parent.linux_dmabuf_feedback = b->parent.pending_linux_dmabuf_feedback;
+  wayland_dmabuf_feedback_init(&b->parent.pending_linux_dmabuf_feedback);
 
   weston_log("Updated nested compositor's DMA-BUF feedback to match host.\n");
 }
@@ -1284,7 +1317,7 @@ static void
 dmabuf_feedback_handle_done(void *data,
                             struct zwp_linux_dmabuf_feedback_v1 *feedback) {
   struct wayland_backend *b = data;
-  dmabuf_feedback_parse_format_table(b->parent.linux_dmabuf_feedback);
+  dmabuf_feedback_parse_format_table(b->parent.pending_linux_dmabuf_feedback);
   dmabuf_feedback_update_nested_from_host(b);
 }
 
@@ -1293,7 +1326,7 @@ static void dmabuf_feedback_handle_format_table(
     uint32_t size) {
   struct wayland_backend *b = data;
   struct wayland_dmabuf_feedback *dmabuf_feedback =
-      b->parent.linux_dmabuf_feedback;
+      b->parent.pending_linux_dmabuf_feedback;
 
   if (dmabuf_feedback->format_table_fd != -1)
     close(dmabuf_feedback->format_table_fd);
@@ -1307,7 +1340,7 @@ static void dmabuf_feedback_handle_main_device(
     struct wl_array *device) {
   struct wayland_backend *b = data;
   struct wayland_dmabuf_feedback *dmabuf_feedback =
-      b->parent.linux_dmabuf_feedback;
+      b->parent.pending_linux_dmabuf_feedback;
 
   if (device->size >= sizeof(dev_t)) {
     memcpy(&dmabuf_feedback->main_device_id, device->data, sizeof(dev_t));
@@ -1326,7 +1359,7 @@ static void dmabuf_feedback_handle_tranche_target_device(
     struct wl_array *device) {
   struct wayland_backend *b = data;
   struct wayland_dmabuf_feedback *dmabuf_feedback =
-      b->parent.linux_dmabuf_feedback;
+      b->parent.pending_linux_dmabuf_feedback;
   struct wayland_tranche *tranche;
 
   tranche = zalloc(sizeof(*tranche));
@@ -1342,7 +1375,7 @@ static void dmabuf_feedback_handle_tranche_flags(
     void *data, struct zwp_linux_dmabuf_feedback_v1 *feedback, uint32_t flags) {
   struct wayland_backend *b = data;
   struct wayland_dmabuf_feedback *dmabuf_feedback =
-      b->parent.linux_dmabuf_feedback;
+      b->parent.pending_linux_dmabuf_feedback;
   struct wayland_tranche *tranche;
 
   if (wl_list_empty(&dmabuf_feedback->tranches))
@@ -1357,7 +1390,7 @@ static void dmabuf_feedback_handle_tranche_formats(
     struct wl_array *indices) {
   struct wayland_backend *b = data;
   struct wayland_dmabuf_feedback *dmabuf_feedback =
-      b->parent.linux_dmabuf_feedback;
+      b->parent.pending_linux_dmabuf_feedback;
   struct wayland_tranche *tranche;
 
   if (wl_list_empty(&dmabuf_feedback->tranches))
@@ -1414,11 +1447,8 @@ wayland_backend_create_output_surface(struct wayland_output *output) {
                                                  output->parent.surface);
 
     if (output->parent.linux_dmabuf_feedback) {
-      if (!b->parent.linux_dmabuf_feedback) {
-        b->parent.linux_dmabuf_feedback =
-            zalloc(sizeof(*b->parent.linux_dmabuf_feedback));
-        wl_list_init(&b->parent.linux_dmabuf_feedback->tranches);
-        b->parent.linux_dmabuf_feedback->format_table_fd = -1;
+      if (!b->parent.pending_linux_dmabuf_feedback) {
+        wayland_dmabuf_feedback_init(&b->parent.pending_linux_dmabuf_feedback);
       }
 
       zwp_linux_dmabuf_feedback_v1_add_listener(
@@ -2744,23 +2774,11 @@ static void wayland_destroy(struct weston_backend *backend) {
     zwp_idle_inhibit_manager_v1_destroy(b->parent.idle_inhibit_manager);
 
   if (b->parent.linux_dmabuf_feedback) {
-    struct wayland_tranche *tranche, *tmp;
+    wayland_dmabuf_feedback_destroy(b->parent.linux_dmabuf_feedback);
+  }
 
-    if (b->parent.linux_dmabuf_feedback->proxy) {
-      zwp_linux_dmabuf_feedback_v1_destroy(
-          b->parent.linux_dmabuf_feedback->proxy);
-    }
-
-    weston_drm_format_array_fini(&b->parent.linux_dmabuf_feedback->formats);
-    if (b->parent.linux_dmabuf_feedback->format_table_fd >= 0)
-      close(b->parent.linux_dmabuf_feedback->format_table_fd);
-
-    wl_list_for_each_safe(tranche, tmp,
-                          &b->parent.linux_dmabuf_feedback->tranches, link) {
-      wayland_tranche_destroy(tranche);
-    }
-
-    free(b->parent.linux_dmabuf_feedback);
+  if (b->parent.pending_linux_dmabuf_feedback) {
+    wayland_dmabuf_feedback_destroy(b->parent.pending_linux_dmabuf_feedback);
   }
 
   wl_cursor_theme_destroy(b->cursor_theme);
