@@ -134,7 +134,7 @@ struct wayland_backend {
     struct zxdg_decoration_manager_v1 *decoration_manager;
     struct zwp_linux_dmabuf_v1 *linux_dmabuf;
     struct wp_content_type_manager_v1 *content_type_manager;
-    struct wayland_dmabuf_feedback *linux_dmabuf_feedback;
+    struct wayland_dmabuf_feedback *current_linux_dmabuf_feedback;
     struct wayland_dmabuf_feedback *pending_linux_dmabuf_feedback;
     struct zwp_idle_inhibit_manager_v1 *idle_inhibit_manager;
 
@@ -525,7 +525,7 @@ find_passthrough_candidate_view(struct weston_output *output_base) {
   struct weston_paint_node *pnode;
   struct wayland_backend *b = to_wayland_backend(output_base->backend);
   struct wayland_dmabuf_feedback *linux_dmabuf_feedback =
-      b->parent.linux_dmabuf_feedback;
+      b->parent.current_linux_dmabuf_feedback;
 
   if (!linux_dmabuf_feedback) {
     return NULL;
@@ -1307,7 +1307,7 @@ static void dmabuf_feedback_update_nested_from_host(struct wayland_backend *b) {
 
   ec->dmabuf_feedback_format_table = new_table;
   ec->default_dmabuf_feedback = new_default_feedback;
-  b->parent.linux_dmabuf_feedback = b->parent.pending_linux_dmabuf_feedback;
+  b->parent.current_linux_dmabuf_feedback = b->parent.pending_linux_dmabuf_feedback;
   wayland_dmabuf_feedback_init(&b->parent.pending_linux_dmabuf_feedback);
 
   weston_log("Updated nested compositor's DMA-BUF feedback to match host.\n");
@@ -2773,8 +2773,8 @@ static void wayland_destroy(struct weston_backend *backend) {
   if (b->parent.idle_inhibit_manager)
     zwp_idle_inhibit_manager_v1_destroy(b->parent.idle_inhibit_manager);
 
-  if (b->parent.linux_dmabuf_feedback) {
-    wayland_dmabuf_feedback_destroy(b->parent.linux_dmabuf_feedback);
+  if (b->parent.current_linux_dmabuf_feedback) {
+    wayland_dmabuf_feedback_destroy(b->parent.current_linux_dmabuf_feedback);
   }
 
   if (b->parent.pending_linux_dmabuf_feedback) {
