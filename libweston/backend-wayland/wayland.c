@@ -30,6 +30,7 @@
 #include "libweston/linux-dmabuf.h"
 #include "libweston/zalloc.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
+#include "linux-dmabuf-unstable-v1-server-protocol.h"
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "presentation-time-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
@@ -170,9 +171,13 @@ struct wayland_output {
     struct wp_content_type_v1 *content_type;
     struct zwp_linux_dmabuf_feedback_v1 *linux_dmabuf_feedback;
     struct zwp_idle_inhibitor_v1 *idle_inhibit;
+    struct zxdg_toplevel_decoration_v1 *decoration;
+    struct wp_tearing_control_v1 *tearing_control;
 
     struct wl_output *output;
     uint32_t global_id;
+
+    struct wp_presentation_feedback *pending_presentation_feedback;
 
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *xdg_toplevel;
@@ -188,7 +193,6 @@ struct wayland_output {
     struct wl_egl_window *egl_window;
   } gl;
 
-  struct wp_tearing_control_v1 *tearing_control;
   uint32_t current_tearing_presentation_hint;
 
   bool output_using_dma;
@@ -444,6 +448,8 @@ static void feedback_handle_presented(void *data,
   struct timespec ts;
   uint32_t presented_flags = 0;
 
+  output->parent.pending_presentation_feedback = NULL;
+
   if (b->parent.presentation_clock_id_valid &&
       b->parent.presentation_clock_id == b->compositor->presentation_clock) {
     ts.tv_sec = ((uint64_t)tv_sec_hi << 32) + tv_sec_lo;
@@ -463,6 +469,8 @@ static void
 feedback_handle_discarded(void *data,
                           struct wp_presentation_feedback *feedback) {
   struct wayland_output *output = data;
+
+  output->parent.pending_presentation_feedback = NULL;
 
   weston_output_finish_frame(&output->base, NULL,
                              WP_PRESENTATION_FEEDBACK_INVALID);
@@ -622,10 +630,19 @@ find_passthrough_candidate_view(struct weston_output *output_base) {
 static void request_next_frame_callback(struct wayland_backend *b,
                                         struct wayland_output *output) {
   if (b->parent.presentation) {
-    struct wp_presentation_feedback *feedback = wp_presentation_feedback(
+    if (output->parent.pending_presentation_feedback) {
+      wp_presentation_feedback_destroy(
+          output->parent.pending_presentation_feedback);
+    }
+
+    output->parent.pending_presentation_feedback = wp_presentation_feedback(
         b->parent.presentation, output->parent.surface);
-    wp_presentation_feedback_add_listener(
-        feedback, &presentation_feedback_listener, output);
+
+    if (output->parent.pending_presentation_feedback) {
+      wp_presentation_feedback_add_listener(
+          output->parent.pending_presentation_feedback,
+          &presentation_feedback_listener, output);
+    }
   } else {
     output->frame_cb = wl_surface_frame(output->parent.surface);
     wl_callback_add_listener(output->frame_cb, &frame_listener, output);
@@ -676,13 +693,13 @@ static int wayland_output_repaint_gl(struct weston_output *output_base) {
 
   async = surface_may_tear(output);
 
-  if (output->tearing_control) {
+  if (output->parent.tearing_control) {
     uint32_t hint = async ? WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC
                           : WP_TEARING_CONTROL_V1_PRESENTATION_HINT_VSYNC;
     if (output->current_tearing_presentation_hint != hint) {
       weston_log("Using presentation hint: %d\n", hint);
-      wp_tearing_control_v1_set_presentation_hint(output->tearing_control,
-                                                  hint);
+      wp_tearing_control_v1_set_presentation_hint(
+          output->parent.tearing_control, hint);
       output->current_tearing_presentation_hint = hint;
     }
   }
@@ -767,6 +784,19 @@ wayland_backend_destroy_output_surface(struct wayland_output *output) {
   if (output->parent.idle_inhibit) {
     zwp_idle_inhibitor_v1_destroy(output->parent.idle_inhibit);
     output->parent.idle_inhibit = NULL;
+  }
+
+  if (output->parent.decoration) {
+    zxdg_toplevel_decoration_v1_destroy(output->parent.decoration);
+  }
+
+  if (output->parent.tearing_control) {
+    wp_tearing_control_v1_destroy(output->parent.tearing_control);
+  }
+
+  if (output->parent.pending_presentation_feedback) {
+    wp_presentation_feedback_destroy(
+        output->parent.pending_presentation_feedback);
   }
 
   wl_surface_destroy(output->parent.surface);
@@ -1471,8 +1501,9 @@ wayland_backend_create_output_surface(struct wayland_output *output) {
   wl_surface_set_buffer_scale(output->parent.surface, 1);
 
   if (b->parent.tearing_control_manager) {
-    output->tearing_control = wp_tearing_control_manager_v1_get_tearing_control(
-        b->parent.tearing_control_manager, output->parent.surface);
+    output->parent.tearing_control =
+        wp_tearing_control_manager_v1_get_tearing_control(
+            b->parent.tearing_control_manager, output->parent.surface);
     output->current_tearing_presentation_hint = UINT32_MAX;
   }
 
@@ -1500,14 +1531,14 @@ wayland_backend_create_output_surface(struct wayland_output *output) {
   }
 
   if (b->parent.decoration_manager && output->parent.xdg_toplevel) {
-    struct zxdg_toplevel_decoration_v1 *decoration;
+    output->parent.decoration =
+        zxdg_decoration_manager_v1_get_toplevel_decoration(
+            b->parent.decoration_manager, output->parent.xdg_toplevel);
 
-    decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(
-        b->parent.decoration_manager, output->parent.xdg_toplevel);
-
-    if (decoration) {
+    if (output->parent.decoration) {
       zxdg_toplevel_decoration_v1_set_mode(
-          decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+          output->parent.decoration,
+          ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
     }
   }
 
@@ -2429,6 +2460,14 @@ static void wayland_input_destroy(struct wayland_input *input) {
   if (input->seat_initialized)
     weston_seat_release(&input->base);
 
+  if (input->parent.relative_pointer) {
+    zwp_relative_pointer_v1_destroy(input->parent.relative_pointer);
+  }
+
+  if (input->parent.locked_pointer) {
+    zwp_locked_pointer_v1_destroy(input->parent.locked_pointer);
+  }
+
   if (input->parent.keyboard) {
     if (input->seat_version >= WL_KEYBOARD_RELEASE_SINCE_VERSION)
       wl_keyboard_release(input->parent.keyboard);
@@ -2768,6 +2807,9 @@ static void wayland_destroy(struct weston_backend *backend) {
 
   if (b->parent.viewporter)
     wp_viewporter_destroy(b->parent.viewporter);
+
+  if (b->parent.linux_dmabuf)
+    zwp_linux_dmabuf_v1_destroy(b->parent.linux_dmabuf);
 
   if (b->parent.tearing_control_manager)
     wp_content_type_manager_v1_destroy(b->parent.content_type_manager);
