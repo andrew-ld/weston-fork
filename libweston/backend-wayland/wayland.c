@@ -462,14 +462,16 @@ static void feedback_handle_presented(void *data,
     presented_flags |= WESTON_FINISH_FRAME_TEARING;
   }
 
-  weston_output_finish_frame(&output->base, &ts, presented_flags);
-
-  if (output->parent.pending_presentation_feedback) {
-    wp_presentation_feedback_destroy(
-        output->parent.pending_presentation_feedback);
-  }
+  struct wp_presentation_feedback *pending_presentation_feedback =
+      output->parent.pending_presentation_feedback;
 
   output->parent.pending_presentation_feedback = NULL;
+
+  weston_output_finish_frame(&output->base, &ts, presented_flags);
+
+  if (pending_presentation_feedback) {
+    wp_presentation_feedback_destroy(pending_presentation_feedback);
+  }
 }
 
 static void
@@ -477,15 +479,17 @@ feedback_handle_discarded(void *data,
                           struct wp_presentation_feedback *feedback) {
   struct wayland_output *output = data;
 
+  struct wp_presentation_feedback *pending_presentation_feedback =
+      output->parent.pending_presentation_feedback;
+
+  output->parent.pending_presentation_feedback = NULL;
+
   weston_output_finish_frame(&output->base, NULL,
                              WP_PRESENTATION_FEEDBACK_INVALID);
 
-  if (output->parent.pending_presentation_feedback) {
-    wp_presentation_feedback_destroy(
-        output->parent.pending_presentation_feedback);
+  if (pending_presentation_feedback) {
+    wp_presentation_feedback_destroy(pending_presentation_feedback);
   }
-
-  output->parent.pending_presentation_feedback = NULL;
 }
 
 static const struct wp_presentation_feedback_listener
