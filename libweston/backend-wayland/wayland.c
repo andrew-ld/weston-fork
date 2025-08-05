@@ -202,6 +202,8 @@ struct wayland_output {
   struct weston_mode native_mode;
 
   struct wl_callback *frame_cb;
+
+  const struct pixel_format_info **used_egl_formats;
 };
 
 struct wayland_parent_output {
@@ -448,6 +450,11 @@ static void feedback_handle_presented(void *data,
   struct timespec ts;
   uint32_t presented_flags = 0;
 
+  if (output->parent.pending_presentation_feedback) {
+    wp_presentation_feedback_destroy(
+        output->parent.pending_presentation_feedback);
+  }
+
   output->parent.pending_presentation_feedback = NULL;
 
   if (b->parent.presentation_clock_id_valid &&
@@ -469,6 +476,11 @@ static void
 feedback_handle_discarded(void *data,
                           struct wp_presentation_feedback *feedback) {
   struct wayland_output *output = data;
+
+  if (output->parent.pending_presentation_feedback) {
+    wp_presentation_feedback_destroy(
+        output->parent.pending_presentation_feedback);
+  }
 
   output->parent.pending_presentation_feedback = NULL;
 
@@ -840,6 +852,9 @@ static void wayland_output_destroy(struct weston_output *base) {
   if (output->frame_cb)
     wl_callback_destroy(output->frame_cb);
 
+  if (output->used_egl_formats)
+    free(output->used_egl_formats);
+
   passthrough_cache_clear(output);
 
   free(output->title);
@@ -903,6 +918,10 @@ static int wayland_output_init_gl_renderer(struct wayland_output *output) {
         &ec->dmabuf_feedback_format_table->scanout_formats_indices);
 
     if (!egl_formats || num_egl_formats == 0) {
+      if (egl_formats) {
+        free(egl_formats);
+      }
+
       egl_formats = get_host_formats(
           ec, &num_egl_formats,
           &ec->dmabuf_feedback_format_table->renderer_formats_indices);
@@ -912,11 +931,17 @@ static int wayland_output_init_gl_renderer(struct wayland_output *output) {
   }
 
   if (!egl_formats || num_egl_formats == 0) {
+    if (egl_formats) {
+      free(egl_formats);
+    }
+
     egl_formats = pixel_format_get_array(
         fallback_wayland_formats, ARRAY_LENGTH(fallback_wayland_formats));
     num_egl_formats = ARRAY_LENGTH(fallback_wayland_formats);
     weston_log("No host formats found, using fallback for EGL.\n");
   }
+
+  output->used_egl_formats = egl_formats;
 
   struct gl_renderer_output_options options = {
       .formats = egl_formats,
