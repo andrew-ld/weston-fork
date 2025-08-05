@@ -450,13 +450,6 @@ static void feedback_handle_presented(void *data,
   struct timespec ts;
   uint32_t presented_flags = 0;
 
-  if (output->parent.pending_presentation_feedback) {
-    wp_presentation_feedback_destroy(
-        output->parent.pending_presentation_feedback);
-  }
-
-  output->parent.pending_presentation_feedback = NULL;
-
   if (b->parent.presentation_clock_id_valid &&
       b->parent.presentation_clock_id == b->compositor->presentation_clock) {
     ts.tv_sec = ((uint64_t)tv_sec_hi << 32) + tv_sec_lo;
@@ -470,12 +463,6 @@ static void feedback_handle_presented(void *data,
   }
 
   weston_output_finish_frame(&output->base, &ts, presented_flags);
-}
-
-static void
-feedback_handle_discarded(void *data,
-                          struct wp_presentation_feedback *feedback) {
-  struct wayland_output *output = data;
 
   if (output->parent.pending_presentation_feedback) {
     wp_presentation_feedback_destroy(
@@ -483,9 +470,22 @@ feedback_handle_discarded(void *data,
   }
 
   output->parent.pending_presentation_feedback = NULL;
+}
+
+static void
+feedback_handle_discarded(void *data,
+                          struct wp_presentation_feedback *feedback) {
+  struct wayland_output *output = data;
 
   weston_output_finish_frame(&output->base, NULL,
                              WP_PRESENTATION_FEEDBACK_INVALID);
+
+  if (output->parent.pending_presentation_feedback) {
+    wp_presentation_feedback_destroy(
+        output->parent.pending_presentation_feedback);
+  }
+
+  output->parent.pending_presentation_feedback = NULL;
 }
 
 static const struct wp_presentation_feedback_listener
