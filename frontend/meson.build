@@ -32,8 +32,6 @@ libexec_weston = shared_library(
 	dependencies: deps_weston,
 	install_dir: dir_module_weston,
 	install: true,
-	version: '0.0.0',
-	soversion: 0
 )
 dep_libexec_weston = declare_dependency(
 	link_with: libexec_weston,
