@@ -123,7 +123,6 @@ lib_weston = shared_library(
 	include_directories: common_inc,
 	install: true,
 	cpp_args: '-std=c++17',
-	version: '0.0.@0@'.format(libweston_revision),
 	link_whole: lib_libshared,
 	dependencies: deps_libweston
 )
