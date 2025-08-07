@@ -30,6 +30,8 @@
 extern "C" {
 #endif
 
+typedef void (*ready_callback)();
+
 #include <libweston/libweston.h>
 #include <libweston/config-parser.h>
 
@@ -109,7 +111,7 @@ text_backend_destroy(struct text_backend *text_backend);
 #define WET_MAIN_RET_MISSING_CAPS 77
 
 int
-wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data);
+wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data, ready_callback *ready_callback_ptr);
 
 #ifdef  __cplusplus
 }

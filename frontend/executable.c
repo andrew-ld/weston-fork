@@ -26,9 +26,10 @@
 #include "config.h"
 
 #include "weston.h"
+#include <stdlib.h>
 
 int
 main(int argc, char *argv[])
 {
-	return wet_main(argc, argv, NULL);
+	return wet_main(argc, argv, NULL, NULL);
 }

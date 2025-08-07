@@ -4527,7 +4527,7 @@ sigint_helper(int sig)
 }
 
 WL_EXPORT int
-wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
+wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data, ready_callback *ready_callback_ptr)
 {
 	int ret = EXIT_FAILURE;
 	char *cmdline;
@@ -4902,6 +4902,10 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 	} else {
 		if (execute_autolaunch(&wet, config) < 0)
 			goto out;
+	}
+
+	if (ready_callback_ptr) {
+		(*ready_callback_ptr)();
 	}
 
 	wl_display_run(display);
